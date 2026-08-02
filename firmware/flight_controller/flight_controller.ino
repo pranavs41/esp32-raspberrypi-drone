@@ -12,11 +12,10 @@
 
 
 #define USE_FIXED_LEVEL 1
-// Offsets are BENCH TRUTH (180-yaw averaged). Steady torque lives in PITCH_TRIM.
 const float PITCH_OFFSET_FIXED =  -1.5f;
 const float ROLL_OFFSET_FIXED  = -0.24f; //-1.35
 float YAW_TRIM   = -10.0f;
-float PITCH_TRIM = 15.0f;   // +ve = back pair faster = nose-down = forward
+float PITCH_TRIM = 15.0f;
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -26,7 +25,6 @@ Packet rxBuf;
 unsigned long lastReceive=0;
 
 
-// ---- TELEMETRY (must match TX struct exactly) ----
 struct __attribute__((packed)) Telem {
   float pitch, roll, iR, iP, vib;
   uint16_t thr;
@@ -38,13 +36,16 @@ bool peerAdded=false;
 unsigned long lastTelem=0;
 
 
-// ---- Pi optical flow link (M3) ----
+// ---- Pi optical flow link ----
 float flowVelX=0, flowVelY=0;
 uint8_t flowQ=0;
 bool flowValid=false;
 unsigned long lastFlowMs=0;
 uint8_t flowBuf[12];
 int flowIdx=0;
+
+// ---- DEBUG: byte counter (starves the parser - fF stays 0 while this is 1) ----
+#define FLOW_RAW_DEBUG 0
 
 
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
@@ -82,9 +83,8 @@ const int MOTOR_IDLE=80;
 #define FAILSAFE_MS  700
 #define LANDING_RATE 120.0f
 
-// ---- pilot soft landing ----
-#define LAND_STICK_THR   300     // rx.throttle below this = stick full-down = land command
-#define PILOT_LAND_RATE  180.0f  // units/sec descent
+#define LAND_STICK_THR   300
+#define PILOT_LAND_RATE  180.0f
 
 
 float throttleHold=0;
@@ -100,7 +100,6 @@ float Ki_roll=0.35f, Ki_pitch=0.35f, Ki_yaw=0.20f;
 float iRoll=0,iPitch=0,iYaw=0, ePrevRoll=0,ePrevPitch=0,ePrevYaw=0;
 
 
-// ---- integral activation latch (hysteresis, no ground windup) ----
 #define I_LIFT_THR   550.0f
 #define I_LAND_THR   350.0f
 #define I_LAND_MS    400
@@ -150,8 +149,7 @@ void calibrate(){
 #else
   pitchOffset=atan2(ay,az)*57.2958f;
   rollOffset =atan2(ax,az)*57.2958f;
-  Serial.printf("Level ref (measured - copy into FIXED consts): pitch=%.1f roll=%.1f\n",
-                pitchOffset,rollOffset);
+  Serial.printf("Level ref (measured): pitch=%.1f roll=%.1f\n",pitchOffset,rollOffset);
 #endif
   pitchAngle = atan2(ay,az)*57.2958f - pitchOffset;
   rollAngle  = atan2(ax,az)*57.2958f - rollOffset;
@@ -164,7 +162,7 @@ void motorsOff(){ m1.sendThrottle(0);m2.sendThrottle(0);m3.sendThrottle(0);m4.se
 
 void setup(){
   Serial.begin(115200); delay(200);
-  Serial2.begin(115200, SERIAL_8N1, 27, 17);   // Pi flow link: RX=GPIO16
+  Serial2.begin(115200, SERIAL_8N1, 27, 17);   // <<< RX PIN - CHANGE TO 14 IF WIRE IS ON 14
   Wire.begin(21,22);
   Wire.setClock(400000);
   if(!mpu.begin()){ Serial.println("MPU NOT found"); while(1){} }
@@ -182,13 +180,35 @@ void setup(){
   Serial.print("FC MAC: "); Serial.println(WiFi.macAddress());
 
 
-  Serial.printf("ANGLE MODE. MOTORS_LIVE=%d ANGLE_KP=%.1f Kp=%.1f Ki_r=%.2f Ki_p=%.2f YAW_TRIM=%.1f PITCH_TRIM=%.1f FLOW_RX=ON\n",
-                MOTORS_LIVE,ANGLE_KP,Kp,Ki_roll,Ki_pitch,YAW_TRIM,PITCH_TRIM);
+  Serial.printf("ANGLE MODE. FLOW_RAW_DEBUG=%d\n", FLOW_RAW_DEBUG);
   lastLoop=micros();
 }
 
 
 void loop(){
+
+#if FLOW_RAW_DEBUG
+  // ---- byte counter: drains the port itself, nothing can slip past ----
+  static unsigned long dbgT=0;
+  static unsigned long byteCount=0;
+  static uint8_t firstBytes[16];
+  static int firstIdx=0;
+
+  while(Serial2.available()){
+    uint8_t c = Serial2.read();
+    byteCount++;
+    if(firstIdx<16) firstBytes[firstIdx++]=c;
+  }
+
+  if(millis()-dbgT>1000){
+    dbgT=millis();
+    Serial.printf(">> bytes/sec:%lu  first16: ", byteCount);
+    for(int i=0;i<firstIdx;i++) Serial.printf("%02X ", firstBytes[i]);
+    Serial.println();
+    byteCount=0;
+  }
+#endif
+
   unsigned long now=micros(); float dt=(now-lastLoop)/1000000.0f;
   if(dt<0.002f) return; lastLoop=now;
 
@@ -205,17 +225,17 @@ void loop(){
   }
 
 
-  // ---- read Pi flow packets (M3) ----
+  // ---- read Pi flow packets ----
   while(Serial2.available()){
     uint8_t c = Serial2.read();
     if(flowIdx==0 && c!=0xAA) continue;
     if(flowIdx==1 && c!=0x55){ flowIdx=0; continue; }
     flowBuf[flowIdx++]=c;
-    if(flowIdx==12){
+    if(flowIdx==10){
       flowIdx=0;
       uint8_t ck=0;
-      for(int i=2;i<11;i++) ck^=flowBuf[i];
-      if(ck==flowBuf[11]){
+      for(int i=2;i<9;i++) ck^=flowBuf[i];
+      if(ck==flowBuf[9]){
         int16_t vx = flowBuf[2] | (flowBuf[3]<<8);
         int16_t vy = flowBuf[4] | (flowBuf[5]<<8);
         flowVelX = vx/100.0f;
@@ -280,7 +300,6 @@ void loop(){
       bool landStick = (rx.throttle < LAND_STICK_THR);
 
       if(landStick && throttleHold > MOTOR_IDLE){
-        // ---- PILOT SOFT LANDING ----
         throttleHold -= PILOT_LAND_RATE*dt;
         if(throttleHold <= MOTOR_IDLE){
           armed=false;
@@ -344,7 +363,6 @@ void loop(){
   float pitchErr = pitchSet - pitchAngle;
 
 
-  // ---- integral activation latch ----
   if(!iActive && throttleHold > I_LIFT_THR) iActive = true;
   if(iActive){
     if(throttleHold < I_LAND_THR){
@@ -366,7 +384,6 @@ void loop(){
       pitchPauseUntil = millis() + I_PAUSE_MS;
     }
 
-    // ---- stick-freeze: integrate only hands-off, dump a bite at release ----
     bool rollStick  = (rR != 0);
     bool pitchStick = (pR != 0);
 
@@ -415,7 +432,6 @@ void loop(){
   float outYaw   = Kp*eYaw   + Ki_yaw  *iYaw                     + Kd*dY;
 
 
-  // m1=BR m2=TR m3=BL m4=TL. +PITCH_TRIM speeds the back pair = nose-down = forward
   float base=throttleHold;
   float s1=base+outPitch+PITCH_TRIM-outRoll+outYaw-YAW_TRIM;
   float s2=base-outPitch-PITCH_TRIM-outRoll-outYaw+YAW_TRIM;
@@ -448,16 +464,11 @@ void loop(){
   }
 
 
-  if(millis()-lastPrint>200){
+  if(millis()-lastPrint>500){
     lastPrint=millis();
-    int avg=(d1+d2+d3+d4)/4; char hi[5]="....";
-    if(d1>avg+10)hi[0]='1'; if(d2>avg+10)hi[1]='2';
-    if(d3>avg+10)hi[2]='3'; if(d4>avg+10)hi[3]='4';
     const char* lnk = linkOk ? "OK" : (linkLost ? "LOST" : "GRACE");
-    Serial.printf("%s thr:%4.0f P:%5.1f R:%5.1f vib:%5.2f dt:%.2fms HIGH:%s LNK:%s\n",
+    Serial.printf("%s thr:%4.0f P:%5.1f R:%5.1f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d LNK:%s\n",
       armed?"ARM":"DIS", throttleHold, pitchAngle, rollAngle,
-      sqrtf(vibRMS), dtMsFilt, hi, lnk);
-    Serial.printf("  d1:%d d2:%d d3:%d d4:%d iR:%5.1f iP:%5.1f iAct:%d fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d\n",
-      d1,d2,d3,d4, iRoll, iPitch, iActive, flowVelX, flowVelY, flowQ, flowFresh);
+      flowVelX, flowVelY, flowQ, flowFresh, lnk);
   }
 }
