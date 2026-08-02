@@ -35,5 +35,21 @@ Stick centers: THR 2128 · YAW 1909 · PITCH 2173 · ROLL 1968
 - Control 50Hz up · telemetry 10Hz down
 - Will add antenna
 
-## Flow packet (Pi → FC, 30Hz)
-[AA][55][velX:i16×100][velY:i16×100][q:u8][flags:u8][seq:u8][XOR cksum]
+## Flow packet (Pi → FC)
+115200 baud, 30Hz, one-directional (Pi transmits, FC listens)
+
+| Byte | Field | Notes |
+|------|-------|-------|
+| 0-1  | sync  | 0xAA 0x55 |
+| 2-3  | velX  | int16, little-endian, pixels/frame × 100 |
+| 4-5  | velY  | int16, little-endian, pixels/frame × 100 |
+| 6    | quality | uint8, tracked feature count |
+| 7    | flags | bit0 = valid (quality >= MIN_FEATURES) |
+| 8    | seq   | rolling counter |
+| 9    | cksum | XOR of bytes 2-8 |
+
+**Total: 10 bytes.** FC treats data as stale after 200ms without a valid packet
+(`flowFresh` gate) and falls back to unassisted flight.
+
+⚠ Originally mis-specced as 12 bytes — the FC parser waited for a frame length
+that never arrived, so every packet was silently dropped. Cost several days.
