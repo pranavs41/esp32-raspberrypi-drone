@@ -21,6 +21,6 @@ reference vs. steady torque compensation.
 - [x] Stable manual hover, tuned trim, heading hold
 - [x] Live wireless telemetry for flight-log tuning
 - [x] Optical flow pipeline (M2): 30fps, ±0.02px noise floor
-- [ ] M3: flow → FC UART link *(in progress)*
+- [x] M3: flow → FC UART link *(in progress)*
 - [ ] M4: velocity damping — vision drift-kill
 - [ ] ToF integration: altitude scale + wall avoidance
