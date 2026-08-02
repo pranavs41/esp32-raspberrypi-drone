@@ -9,7 +9,7 @@
 | GPIO4  | Motor 4 (TL, CW) — DShot300 |
 | GPIO21 | I2C SDA → MPU6050 |
 | GPIO22 | I2C SCL → MPU6050 (400kHz) |
-| GPIO16 | UART2 RX ← Pi flow link (115200)  ⚠ VERIFY vs green ESC-telem wire |
+| GPIO27 | UART2 RX ← Pi flow link (115200) |
 
 ## Transmitter ESP32
 | Pin | Function |
