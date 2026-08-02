@@ -1,0 +1,38 @@
+# Wiring & Pinout
+
+## ESP32 Flight Controller
+| Pin | Function |
+|-----|----------|
+| GPIO32 | Motor 1 (BR, CW) — DShot300 |
+| GPIO33 | Motor 2 (TR, CCW) — DShot300 |
+| GPIO25 | Motor 3 (BL, CCW) — DShot300 |
+| GPIO4  | Motor 4 (TL, CW) — DShot300 |
+| GPIO21 | I2C SDA → MPU6050 |
+| GPIO22 | I2C SCL → MPU6050 (400kHz) |
+| GPIO16 | UART2 RX ← Pi flow link (115200)  ⚠ VERIFY vs green ESC-telem wire |
+
+## Transmitter ESP32
+| Pin | Function |
+|-----|----------|
+| GPIO33 | Throttle (inverted) |
+| GPIO32 | Yaw |
+| GPIO35 | Pitch (inverted) |
+| GPIO34 | Roll |
+| GPIO16 | Arm switch (INPUT_PULLUP, LOW = armed) |
+
+Stick centers: THR 2128 · YAW 1909 · PITCH 2173 · ROLL 1968
+
+## Raspberry Pi 3B+
+| Pin | Function |
+|-----|----------|
+| Pin 8 (GPIO14/TXD) | → ESP32 GPIO16 (flow packets) |
+| Pin 6 (GND) | common ground |
+| 5V via GPIO header | ← buck converter (bypasses input fuse) |
+| CSI | OV5647 camera, M12 lens, focused @ ~1.5m |
+
+## Radio
+- Drone ↔ TX: ESP-NOW. FC MAC: B4:BF:E9:60:89:D0
+- Control 50Hz up · telemetry 10Hz down
+
+## Flow packet (Pi → FC, 30Hz)
+[AA][55][velX:i16×100][velY:i16×100][q:u8][flags:u8][seq:u8][XOR cksum]
