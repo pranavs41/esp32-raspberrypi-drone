@@ -33,6 +33,7 @@ Stick centers: THR 2128 · YAW 1909 · PITCH 2173 · ROLL 1968
 ## Radio
 - Drone ↔ TX: ESP-NOW. FC MAC: B4:BF:E9:60:89:D0
 - Control 50Hz up · telemetry 10Hz down
+- Will add antenna
 
 ## Flow packet (Pi → FC, 30Hz)
 [AA][55][velX:i16×100][velY:i16×100][q:u8][flags:u8][seq:u8][XOR cksum]
