@@ -13,9 +13,9 @@
 
 #define USE_FIXED_LEVEL 1
 const float PITCH_OFFSET_FIXED =  -1.5f;
-const float ROLL_OFFSET_FIXED  = -0.24f; //-1.35
-float YAW_TRIM   = -10.0f;
-float PITCH_TRIM = 15.0f;
+const float ROLL_OFFSET_FIXED  = -0.24f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
+float YAW_TRIM   = -2.0f;
+float PITCH_TRIM = 5.0f;
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -25,10 +25,13 @@ Packet rxBuf;
 unsigned long lastReceive=0;
 
 
+// 2026-08-02: flow fields + hdg added - MUST match TX byte-for-byte (37 bytes)
 struct __attribute__((packed)) Telem {
   float pitch, roll, iR, iP, vib;
+  float fVx, fVy;
+  float hdg;
   uint16_t thr;
-  uint8_t  armd;
+  uint8_t  armd, fQ, fF;
 };
 uint8_t txMac[6];
 volatile bool txKnown=false;
@@ -46,7 +49,13 @@ int flowIdx=0;
 
 // ---- DEBUG: byte counter (starves the parser - fF stays 0 while this is 1) ----
 #define FLOW_RAW_DEBUG 0
-
+// ---- M4: optical flow velocity damping ----
+// SIGN VERIFIED 2026-08: slide left -> fVx positive -> fRA positive -> right lean
+//                        -> opposes drift. No negation needed.
+#define VEL_GAIN     0.35f   // deg lean per (px/frame)
+#define VEL_Q_MIN    25      // min flow quality to trust the data
+#define VEL_MAX_ANG  3.5f    // hard clamp on flow-commanded lean
+#define VEL_ENABLE   1       // 0 = fly with damping off
 
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
   if(len == sizeof(Packet)){
@@ -61,7 +70,7 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
 Adafruit_MPU6050 mpu;
 float gyroBiasX=0,gyroBiasY=0,gyroBiasZ=0;
 float pitchAngle=0, rollAngle=0, pitchOffset=0, rollOffset=0;
-
+float headingRel = 0;           // deg from arming heading
 
 DShotRMT m1(GPIO_NUM_32,DSHOT300,false);
 DShotRMT m2(GPIO_NUM_33,DSHOT300,false);
@@ -73,7 +82,7 @@ const int THR_CENTER=2128,YAW_CENTER=1909,PITCH_CENTER=2173,ROLL_CENTER=1968;
 const int THR_DEADBAND=150;
 const float THR_RATE=0.0007f;
 const int STICK_DEADBAND=150;
-const int YAW_DEADBAND=4096;
+const int YAW_DEADBAND=4096;   // intentionally > full ADC range: yaw stick disabled
 const int THR_MAX=1800;
 const int THR_GATE=100;
 const int MOTOR_IDLE=80;
@@ -128,6 +137,7 @@ float prevPitchErr = 0;
 
 void resetI(){
   iRoll=0; iPitch=0; iYaw=0;
+  headingRel = 0;
   prevRollErr=0; prevPitchErr=0;
   rollPauseUntil=0; pitchPauseUntil=0;
   iActive=false; iBelowSince=0;
@@ -162,7 +172,7 @@ void motorsOff(){ m1.sendThrottle(0);m2.sendThrottle(0);m3.sendThrottle(0);m4.se
 
 void setup(){
   Serial.begin(115200); delay(200);
-  Serial2.begin(115200, SERIAL_8N1, 27, 17);   // <<< RX PIN - CHANGE TO 14 IF WIRE IS ON 14
+  Serial2.begin(115200, SERIAL_8N1, 27, 17);
   Wire.begin(21,22);
   Wire.setClock(400000);
   if(!mpu.begin()){ Serial.println("MPU NOT found"); while(1){} }
@@ -179,6 +189,7 @@ void setup(){
   esp_now_register_recv_cb(onRecv);
   Serial.print("FC MAC: "); Serial.println(WiFi.macAddress());
 
+  Serial.print("Telem size: "); Serial.println(sizeof(Telem));   // must print 37
 
   Serial.printf("ANGLE MODE. FLOW_RAW_DEBUG=%d\n", FLOW_RAW_DEBUG);
   lastLoop=micros();
@@ -332,6 +343,7 @@ void loop(){
   float gPitchRate=(g.gyro.x-gyroBiasX)*57.2958f;
   float gRollRate =(g.gyro.y-gyroBiasY)*57.2958f;
   float gYaw      =(g.gyro.z-gyroBiasZ)*57.2958f;
+  if(armed) headingRel += gYaw * dt;
 
 
   float pitchAccel=atan2(a.acceleration.y,a.acceleration.z)*57.2958f - pitchOffset;
@@ -344,8 +356,26 @@ void loop(){
   int pR = (int)rx.pitch - PITCH_CENTER; if(abs(pR) < STICK_DEADBAND) pR = 0;
   int rR = (int)rx.roll  - ROLL_CENTER;  if(abs(rR) < STICK_DEADBAND) rR = 0;
   float pitchSet = -pR/2048.0f*MAX_ANGLE;
-  float rollSet  =  rR/2048.0f*MAX_ANGLE;
+  float rollSet  =  rR/2048.0f*MAX_ANGLE;   
   float setYaw   = -yR/2048.0f*MAX_YAWRATE;
+
+  // ---- heading hold: P term on accumulated heading error ----
+  #define HDG_KP 1.5f            // deg/s of yaw rate per deg of heading error
+  #define HDG_MAX_RATE 60.0f
+  if(armed && yR==0){
+    setYaw += constrain(-headingRel * HDG_KP, -HDG_MAX_RATE, HDG_MAX_RATE);
+  }
+
+  // ---- M4: flow damping - hands-off only, quality-gated, clamped ----
+  float flowRollAdj = 0, flowPitchAdj = 0;
+#if VEL_ENABLE
+  if(flowFresh && flowQ >= VEL_Q_MIN && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
+    flowRollAdj  = constrain(flowVelX * VEL_GAIN, -VEL_MAX_ANG, VEL_MAX_ANG);
+    flowPitchAdj = constrain(flowVelY * VEL_GAIN, -VEL_MAX_ANG, VEL_MAX_ANG);
+    rollSet  += flowRollAdj;
+    pitchSet += flowPitchAdj;
+  }
+#endif
 
 
   float setPitch = ANGLE_KP * (pitchSet - pitchAngle) * PITCH_ANGLE_SIGN;
@@ -459,16 +489,21 @@ void loop(){
     Telem tl;
     tl.pitch = pitchAngle; tl.roll = rollAngle;
     tl.iR = iRoll; tl.iP = iPitch; tl.vib = sqrtf(vibRMS);
+    tl.fVx = flowVelX;
+    tl.fVy = flowVelY;
+    tl.hdg = headingRel;
     tl.thr = (uint16_t)throttleHold; tl.armd = armed ? 1 : 0;
+    tl.fQ  = flowQ;
+    tl.fF  = flowFresh ? 1 : 0;
     esp_now_send(txMac, (uint8_t*)&tl, sizeof(tl));
   }
 
 
-  if(millis()-lastPrint>500){
+  if(millis()-lastPrint>200){
     lastPrint=millis();
     const char* lnk = linkOk ? "OK" : (linkLost ? "LOST" : "GRACE");
-    Serial.printf("%s thr:%4.0f P:%5.1f R:%5.1f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d LNK:%s\n",
-      armed?"ARM":"DIS", throttleHold, pitchAngle, rollAngle,
-      flowVelX, flowVelY, flowQ, flowFresh, lnk);
+      Serial.printf("%s thr:%4.0f P:%5.1f R:%5.1f vib:%4.2f iR:%5.1f iP:%5.1f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d fRA:%5.2f fPA:%5.2f hdg:%+6.1f LNK:%s\n",
+      armed?"ARM":"DIS", throttleHold, pitchAngle, rollAngle, sqrtf(vibRMS),
+      iRoll, iPitch, flowVelX, flowVelY, flowQ, flowFresh, flowRollAdj, flowPitchAdj, headingRel, lnk);
   }
 }
