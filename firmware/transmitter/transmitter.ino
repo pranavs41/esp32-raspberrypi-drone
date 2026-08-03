@@ -25,6 +25,7 @@ struct __attribute__((packed)) Telem {
   float pitch, roll, iR, iP, vib;
   float fVx, fVy;
   float hdg;                    // <<< NEW
+  float alt;
   uint16_t thr;
   uint8_t  armd, fQ, fF;
 };
@@ -95,8 +96,8 @@ void loop(){
       Serial.printf("FC %s thr:%4u P:%5.1f R:%5.1f iR:%5.1f iP:%5.1f vib:%4.2f",
         telem.armd?"ARM":"DIS", telem.thr, telem.pitch,
         telem.roll, telem.iR, telem.iP, telem.vib);
-      Serial.printf(" | fVx:%+6.2f fVy:%+6.2f fQ:%3u fF:%u hdg:%+6.1f\n",
-        telem.fVx, telem.fVy, telem.fQ, telem.fF, telem.hdg);
+      Serial.printf(" | fVx:%+6.2f fVy:%+6.2f fQ:%3u fF:%u hdg:%+6.1f alt:%5.2f\n",
+        telem.fVx, telem.fVy, telem.fQ, telem.fF, telem.hdg, telem.alt);
     } else {
       Serial.println("FC --no telem--");
     }

@@ -30,6 +30,7 @@ struct __attribute__((packed)) Telem {
   float pitch, roll, iR, iP, vib;
   float fVx, fVy;
   float hdg;
+  float alt; 
   uint16_t thr;
   uint8_t  armd, fQ, fF;
 };
@@ -44,7 +45,7 @@ float flowVelX=0, flowVelY=0;
 uint8_t flowQ=0;
 bool flowValid=false;
 unsigned long lastFlowMs=0;
-uint8_t flowBuf[12];
+uint8_t flowBuf[16];
 int flowIdx=0;
 
 // ---- DEBUG: byte counter (starves the parser - fF stays 0 while this is 1) ----
@@ -56,6 +57,21 @@ int flowIdx=0;
 #define VEL_Q_MIN    25      // min flow quality to trust the data
 #define VEL_MAX_ANG  3.5f    // hard clamp on flow-commanded lean
 #define VEL_ENABLE   1       // 0 = fly with damping off
+// ---- altitude hold ----
+#define ALT_ENABLE     1
+#define ALT_KP         180.0f   // throttle units per metre of error
+#define ALT_KI          60.0f   // throttle units per metre-second
+#define ALT_I_MAX      150.0f   // clamp on altitude integral
+#define ALT_CLIMB_RATE   0.4f   // m/s max target climb
+#define ALT_DESC_RATE    0.2f   // m/s max target descent (deliberately slower)
+#define ALT_MIN_HOLD     0.15f  // don't engage below this
+#define ALT_MAX_HOLD     2.50f  // don't engage above this
+// ---- altitude-aware landing ----
+#define LAND_SLOW_ALT   0.45f   // below this, descend gently
+#define LAND_RATE_HIGH 180.0f   // throttle units/s above LAND_SLOW_ALT
+#define LAND_RATE_LOW   55.0f   // throttle units/s in the slow zone
+#define LAND_TOUCH_ALT  0.10f   // treat as touchdown below this
+#define LAND_TOUCH_MS    250    // ...held this long
 
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
   if(len == sizeof(Packet)){
@@ -71,6 +87,14 @@ Adafruit_MPU6050 mpu;
 float gyroBiasX=0,gyroBiasY=0,gyroBiasZ=0;
 float pitchAngle=0, rollAngle=0, pitchOffset=0, rollOffset=0;
 float headingRel = 0;           // deg from arming heading
+float altM = -1.0f;             // metres from lidar, -1 = invalid
+bool  altOk = false;
+unsigned long lastAltMs = 0;
+
+float altTarget = 0;            // <<< NEW
+float altI = 0;                 // <<< NEW
+bool  altHoldActive = false;    // <<< NEW
+unsigned long touchSince = 0;
 
 DShotRMT m1(GPIO_NUM_32,DSHOT300,false);
 DShotRMT m2(GPIO_NUM_33,DSHOT300,false);
@@ -138,6 +162,7 @@ float prevPitchErr = 0;
 void resetI(){
   iRoll=0; iPitch=0; iYaw=0;
   headingRel = 0;
+  altI = 0; altHoldActive = false; touchSince = 0;   // <<< ADD
   prevRollErr=0; prevPitchErr=0;
   rollPauseUntil=0; pitchPauseUntil=0;
   iActive=false; iBelowSince=0;
@@ -242,22 +267,27 @@ void loop(){
     if(flowIdx==0 && c!=0xAA) continue;
     if(flowIdx==1 && c!=0x55){ flowIdx=0; continue; }
     flowBuf[flowIdx++]=c;
-    if(flowIdx==10){
+if(flowIdx==12){
       flowIdx=0;
       uint8_t ck=0;
-      for(int i=2;i<9;i++) ck^=flowBuf[i];
-      if(ck==flowBuf[9]){
+      for(int i=2;i<11;i++) ck^=flowBuf[i];
+      if(ck==flowBuf[11]){
         int16_t vx = flowBuf[2] | (flowBuf[3]<<8);
         int16_t vy = flowBuf[4] | (flowBuf[5]<<8);
         flowVelX = vx/100.0f;
         flowVelY = vy/100.0f;
         flowQ    = flowBuf[6];
         flowValid= flowBuf[7] & 1;
+        // flowBuf[8] = seq
+        uint16_t acm = flowBuf[9] | (flowBuf[10]<<8);
+        if(acm > 0 && acm < 400){ altM = acm/100.0f; altOk = true; lastAltMs = millis(); }
+        else altOk = false;
         lastFlowMs = millis();
       }
     }
   }
   bool flowFresh = (millis()-lastFlowMs) < 200;
+  if(millis() - lastAltMs > 300) altOk = false;
 
 
   if(txKnown && !peerAdded){
@@ -311,10 +341,25 @@ void loop(){
       bool landStick = (rx.throttle < LAND_STICK_THR);
 
       if(landStick && throttleHold > MOTOR_IDLE){
-        throttleHold -= PILOT_LAND_RATE*dt;
+        // altitude-aware descent: fast up high, gentle near the ground
+        float rate = PILOT_LAND_RATE;
+        if(altOk){
+          rate = (altM > LAND_SLOW_ALT) ? LAND_RATE_HIGH : LAND_RATE_LOW;
+        }
+        throttleHold -= rate*dt;
+
+        // touchdown detection
+        if(altOk && altM < LAND_TOUCH_ALT){
+          if(touchSince == 0) touchSince = millis();
+          if(millis() - touchSince > LAND_TOUCH_MS){
+            armed=false; throttleHold=0; touchSince=0; resetI();
+            Serial.println(">>> TOUCHDOWN - DISARMED");
+          }
+        } else touchSince = 0;
+
         if(throttleHold <= MOTOR_IDLE){
           armed=false;
-          throttleHold=0; resetI();
+          throttleHold=0; touchSince=0; resetI();
           Serial.println(">>> PILOT LANDED & DISARMED");
         }
       } else if(!landStick){
@@ -327,6 +372,29 @@ void loop(){
     }
   }
 
+// ---- altitude hold ----
+#if ALT_ENABLE
+  bool thrStick = (abs((int)rx.throttle - THR_CENTER) > THR_DEADBAND);
+  bool altCanHold = armed && linkOk && !isSoftLanding && altOk
+                    && altM > ALT_MIN_HOLD && altM < ALT_MAX_HOLD
+                    && throttleHold > I_LIFT_THR;
+
+  if(altCanHold && !thrStick){
+    if(!altHoldActive){                 // engage: capture target, decay integral
+      altHoldActive = true;
+      altTarget = altM;
+      altI *= 0.5f;
+    }
+    float err = altTarget - altM;
+    altI += err * dt * ALT_KI;
+    altI = constrain(altI, -ALT_I_MAX, ALT_I_MAX);
+    float corr = err * ALT_KP + altI;
+    corr = constrain(corr, -120.0f, 120.0f);
+    throttleHold = constrain(throttleHold + corr*dt, 0, THR_MAX);
+  } else {
+    altHoldActive = false;              // freeze: altI persists, pilot has throttle
+  }
+#endif
 
   sensors_event_t a,g,t; mpu.getEvent(&a,&g,&t);
 
@@ -492,6 +560,7 @@ void loop(){
     tl.fVx = flowVelX;
     tl.fVy = flowVelY;
     tl.hdg = headingRel;
+    tl.alt = altOk ? altM : -1.0f;        // <<< ADD THIS LINE
     tl.thr = (uint16_t)throttleHold; tl.armd = armed ? 1 : 0;
     tl.fQ  = flowQ;
     tl.fF  = flowFresh ? 1 : 0;
@@ -502,8 +571,9 @@ void loop(){
   if(millis()-lastPrint>200){
     lastPrint=millis();
     const char* lnk = linkOk ? "OK" : (linkLost ? "LOST" : "GRACE");
-      Serial.printf("%s thr:%4.0f P:%5.1f R:%5.1f vib:%4.2f iR:%5.1f iP:%5.1f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d fRA:%5.2f fPA:%5.2f hdg:%+6.1f LNK:%s\n",
+      Serial.printf("%s thr:%4.0f P:%5.1f R:%5.1f vib:%4.2f iR:%5.1f iP:%5.1f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d fRA:%5.2f fPA:%5.2f hdg:%+6.1f alt:%5.2f LNK:%s\n",
       armed?"ARM":"DIS", throttleHold, pitchAngle, rollAngle, sqrtf(vibRMS),
-      iRoll, iPitch, flowVelX, flowVelY, flowQ, flowFresh, flowRollAdj, flowPitchAdj, headingRel, lnk);
+      iRoll, iPitch, flowVelX, flowVelY, flowQ, flowFresh, flowRollAdj, flowPitchAdj, headingRel,
+      altOk?altM:-1.0f, lnk);
   }
 }
