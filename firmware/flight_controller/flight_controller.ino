@@ -106,7 +106,7 @@ const int THR_CENTER=2128,YAW_CENTER=1909,PITCH_CENTER=2173,ROLL_CENTER=1968;
 const int THR_DEADBAND=150;
 const float THR_RATE=0.0007f;
 const int STICK_DEADBAND=150;
-const int YAW_DEADBAND=4096;   // intentionally > full ADC range: yaw stick disabled
+const int YAW_DEADBAND=350;   // intentionally > full ADC range: yaw stick disabled
 const int THR_MAX=1800;
 const int THR_GATE=100;
 const int MOTOR_IDLE=80;
@@ -427,11 +427,16 @@ if(flowIdx==12){
   float rollSet  =  rR/2048.0f*MAX_ANGLE;   
   float setYaw   = -yR/2048.0f*MAX_YAWRATE;
 
-  // ---- heading hold: P term on accumulated heading error ----
-  #define HDG_KP 1.5f            // deg/s of yaw rate per deg of heading error
+// ---- heading hold: stick slews target, P term holds it ----
+  #define HDG_KP 1.5f
   #define HDG_MAX_RATE 60.0f
-  if(armed && yR==0){
-    setYaw += constrain(-headingRel * HDG_KP, -HDG_MAX_RATE, HDG_MAX_RATE);
+  if(armed){
+    if(yR != 0){
+      // stick input: command rate directly, and drag the reference along
+      headingRel = 0;              // stick-commanded yaw doesn't count as error
+    } else {
+      setYaw += constrain(-headingRel * HDG_KP, -HDG_MAX_RATE, HDG_MAX_RATE);
+    }
   }
 
   // ---- M4: flow damping - hands-off only, quality-gated, clamped ----
