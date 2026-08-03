@@ -41,6 +41,7 @@ GlovePacket gp;
 
 float currentRoll = 0, currentPitch = 0;
 bool gotImuData = false;
+bool imuOk = false;          // near the other globals
 unsigned long lastSend = 0;
 
 // tilt delta -> ±1000 with deadzone
@@ -65,10 +66,11 @@ void setup(){
 
   Wire.begin();
   delay(100);
-  if(!bno08x.begin_I2C(0x4B)){
+ if(!bno08x.begin_I2C(0x4A)){
     Serial.println("BNO085 NOT FOUND");
   } else {
-    bno08x.enableReport(SH2_ROTATION_VECTOR, 20000);   // 50Hz
+    bno08x.enableReport(SH2_ROTATION_VECTOR, 20000);
+    imuOk = true;                                      // <
     Serial.println("BNO085 ready");
   }
 
@@ -94,6 +96,7 @@ void setup(){
 
 void loop(){
   // ---- IMU ----
+  if(imuOk){
   if(bno08x.wasReset()) bno08x.enableReport(SH2_ROTATION_VECTOR, 20000);
 
   if(bno08x.getSensorEvent(&imuValue)){
@@ -114,6 +117,7 @@ void loop(){
 
       gotImuData = true;
     }
+  }
   }
 
   if(millis()-lastSend < 20){ delay(1); return; }   // 50Hz
@@ -147,10 +151,10 @@ void loop(){
 
   esp_now_send(txMac, (uint8_t*)&gp, sizeof(gp));
 
-  static unsigned long lastPrint = 0;
+ static unsigned long lastPrint = 0;
   if(millis()-lastPrint > 200){
     lastPrint = millis();
-    Serial.printf("P:%+5d R:%+5d Y:%+5d act:%u thr:%u land:%u KILL:%u\n",
-      gp.pitch, gp.roll, gp.yaw, gp.active, gp.thrUp, gp.land, gp.kill);
+    Serial.printf("raw P:%+6.1f R:%+6.1f | P:%+5d R:%+5d Y:%+5d act:%u thr:%u land:%u KILL:%u\n",
+      currentPitch, currentRoll, gp.pitch, gp.roll, gp.yaw, gp.active, gp.thrUp, gp.land, gp.kill);
   }
 }
