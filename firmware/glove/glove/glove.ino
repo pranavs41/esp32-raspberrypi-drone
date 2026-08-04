@@ -14,6 +14,7 @@ uint8_t txMac[] = {0x70,0x4B,0xCA,0x45,0xED,0x5C};   // TX MAC
 
 Adafruit_BNO08x bno08x;
 sh2_SensorValue_t imuValue;
+bool imuOk = false;
 
 // ---- PINS ----
 const int PINCH_INDEX  = 13;   // throttle up
@@ -24,9 +25,9 @@ const int HALL_INDEX   = 32;
 const int HALL_RING    = 25;   // both halls = fist = secondary KILL
 
 // ---- TILT CALIBRATION ----
-const float ROLL_NEUTRAL  =   5.6f;
-const float PITCH_NEUTRAL = -21.2f;
-const float TILT_DEADZONE =   8.0f;   // deg of hand tilt that does nothing
+const float ROLL_NEUTRAL  =   -4.0f;
+const float PITCH_NEUTRAL = -13.0f;
+const float TILT_DEADZONE =   13.0f;   // deg of hand tilt that does nothing
 const float TILT_FULL     =  40.0f;   // deg for full deflection
 
 // ---- PACKET (must match TX's GlovePacket byte-for-byte) ----
@@ -41,7 +42,6 @@ GlovePacket gp;
 
 float currentRoll = 0, currentPitch = 0;
 bool gotImuData = false;
-bool imuOk = false;          // near the other globals
 unsigned long lastSend = 0;
 
 // tilt delta -> ±1000 with deadzone
@@ -65,14 +65,20 @@ void setup(){
   pinMode(HALL_RING,    INPUT_PULLUP);
 
   Wire.begin();
-  delay(100);
- if(!bno08x.begin_I2C(0x4A)){
-    Serial.println("BNO085 NOT FOUND");
-  } else {
-    bno08x.enableReport(SH2_ROTATION_VECTOR, 20000);
-    imuOk = true;                                      // <
-    Serial.println("BNO085 ready");
+  delay(500);
+
+  // retry loop - BNO085 needs time after power-up before it answers SHTP
+  for(int i=0; i<5 && !imuOk; i++){
+    if(bno08x.begin_I2C(0x4B)){
+      bno08x.enableReport(SH2_ROTATION_VECTOR, 20000);   // 50Hz
+      imuOk = true;
+      Serial.println("BNO085 ready");
+    } else {
+      Serial.printf("BNO085 try %d failed\n", i+1);
+      delay(300);
+    }
   }
+  if(!imuOk) Serial.println("BNO085 NOT FOUND - tilt disabled");
 
   WiFi.mode(WIFI_STA);
   delay(500);
@@ -95,35 +101,35 @@ void setup(){
 }
 
 void loop(){
-  // ---- IMU ----
+  // ---- IMU (guarded - never touch the driver if init failed) ----
   if(imuOk){
-  if(bno08x.wasReset()) bno08x.enableReport(SH2_ROTATION_VECTOR, 20000);
+    if(bno08x.wasReset()) bno08x.enableReport(SH2_ROTATION_VECTOR, 20000);
 
-  if(bno08x.getSensorEvent(&imuValue)){
-    if(imuValue.sensorId == SH2_ROTATION_VECTOR){
-      float qw = imuValue.un.rotationVector.real;
-      float qx = imuValue.un.rotationVector.i;
-      float qy = imuValue.un.rotationVector.j;
-      float qz = imuValue.un.rotationVector.k;
+    if(bno08x.getSensorEvent(&imuValue)){
+      if(imuValue.sensorId == SH2_ROTATION_VECTOR){
+        float qw = imuValue.un.rotationVector.real;
+        float qx = imuValue.un.rotationVector.i;
+        float qy = imuValue.un.rotationVector.j;
+        float qz = imuValue.un.rotationVector.k;
 
-      float sinr = 2.0f*(qw*qx + qy*qz);
-      float cosr = 1.0f - 2.0f*(qx*qx + qy*qy);
-      currentRoll = atan2(sinr, cosr) * 57.2958f;
+        float sinr = 2.0f*(qw*qx + qy*qz);
+        float cosr = 1.0f - 2.0f*(qx*qx + qy*qy);
+        currentRoll = atan2(sinr, cosr) * 57.2958f;
 
-      float sinp = 2.0f*(qw*qy - qz*qx);
-      if(sinp >  1.0f) sinp =  1.0f;
-      if(sinp < -1.0f) sinp = -1.0f;
-      currentPitch = asin(sinp) * 57.2958f;
+        float sinp = 2.0f*(qw*qy - qz*qx);
+        if(sinp >  1.0f) sinp =  1.0f;
+        if(sinp < -1.0f) sinp = -1.0f;
+        currentPitch = asin(sinp) * 57.2958f;
 
-      gotImuData = true;
+        gotImuData = true;
+      }
     }
-  }
   }
 
   if(millis()-lastSend < 20){ delay(1); return; }   // 50Hz
   lastSend = millis();
 
-  // ---- tilt -> stick (coordinate transform from the glove's mounting angle) ----
+  // ---- tilt -> stick (coordinate transform for the glove's mounting angle) ----
   float pitchDelta = currentPitch - PITCH_NEUTRAL;
   float rollDelta  = currentRoll  - ROLL_NEUTRAL;
   float strafe = pitchDelta + rollDelta;    // hand tilt left/right
@@ -140,7 +146,7 @@ void loop(){
     gp.yaw  = 0;
   }
   gp.pitch  = tiltMap(walk);
-  gp.active = gotImuData ? 1 : 0;
+  gp.active = (imuOk && gotImuData) ? 1 : 0;
 
   gp.thrUp = (digitalRead(PINCH_INDEX)  == LOW) ? 1 : 0;
   gp.land  = (digitalRead(PINCH_MIDDLE) == LOW) ? 1 : 0;
@@ -151,10 +157,11 @@ void loop(){
 
   esp_now_send(txMac, (uint8_t*)&gp, sizeof(gp));
 
- static unsigned long lastPrint = 0;
+  static unsigned long lastPrint = 0;
   if(millis()-lastPrint > 200){
     lastPrint = millis();
     Serial.printf("raw P:%+6.1f R:%+6.1f | P:%+5d R:%+5d Y:%+5d act:%u thr:%u land:%u KILL:%u\n",
-      currentPitch, currentRoll, gp.pitch, gp.roll, gp.yaw, gp.active, gp.thrUp, gp.land, gp.kill);
+      currentPitch, currentRoll, gp.pitch, gp.roll, gp.yaw,
+      gp.active, gp.thrUp, gp.land, gp.kill);
   }
 }
