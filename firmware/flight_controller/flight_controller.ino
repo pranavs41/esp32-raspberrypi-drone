@@ -445,14 +445,27 @@ if(flowIdx==12){
     }
   }
 
-  // ---- M4: flow damping - hands-off only, quality-gated, clamped ----
+// ---- M4: flow damping - P on velocity, D on its rate of change ----
   float flowRollAdj = 0, flowPitchAdj = 0;
 #if VEL_ENABLE
   if(flowFresh && flowQ >= VEL_Q_MIN && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
-    flowRollAdj  = constrain(flowVelX * VEL_GAIN, -VEL_MAX_ANG, VEL_MAX_ANG);
-    flowPitchAdj = constrain(flowVelY * VEL_GAIN, -VEL_MAX_ANG, VEL_MAX_ANG);
+    float fdt = (millis() - prevFlowMs) / 1000.0f;
+    float dX = 0, dY = 0;
+    if(fdt > 0.01f && fdt < 0.5f){          // sane interval only
+      dX = (flowVelX - prevFlowX) / fdt;
+      dY = (flowVelY - prevFlowY) / fdt;
+    }
+    prevFlowX = flowVelX; prevFlowY = flowVelY; prevFlowMs = millis();
+
+    float dRollAdj  = constrain(dX * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
+    float dPitchAdj = constrain(dY * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
+
+    flowRollAdj  = constrain(flowVelX*VEL_GAIN + dRollAdj,  -VEL_MAX_ANG, VEL_MAX_ANG);
+    flowPitchAdj = constrain(flowVelY*VEL_GAIN + dPitchAdj, -VEL_MAX_ANG, VEL_MAX_ANG);
     rollSet  += flowRollAdj;
     pitchSet += flowPitchAdj;
+  } else {
+    prevFlowMs = 0;      // force a clean restart when the gate reopens
   }
 #endif
 
