@@ -5,6 +5,7 @@
 
 #include <esp_now.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 
 uint8_t droneMac[] = {0xB4,0xBF,0xE9,0x60,0x89,0xD0};  // FC MAC
 
@@ -35,6 +36,7 @@ struct __attribute__((packed)) GlovePacket {
 GlovePacket glvBuf, glv;
 volatile bool glvFresh = false;
 unsigned long lastGloveRx = 0;
+volatile unsigned long glvCount = 0;
 
 // ---- TELEMETRY (must match FC struct exactly - 41 bytes) ----
 struct __attribute__((packed)) Telem {
@@ -57,6 +59,7 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
   } else if(len == sizeof(GlovePacket)){
     memcpy((void*)&glvBuf, data, sizeof(GlovePacket));
     glvFresh = true;
+    glvCount++;                       // <<< NEW
   }
 }
 
@@ -68,6 +71,7 @@ void setup(){
   pinMode(PIN_ARM, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   delay(500);
   if(esp_now_init() != ESP_OK){
     Serial.println("ESP-NOW init FAIL");
@@ -138,7 +142,7 @@ void loop(){
       Serial.printf("GLV P:%+5d R:%+5d Y:%+5d t:%u l:%u K:%u | ",
         glv.pitch, glv.roll, glv.yaw, glv.thrUp, glv.land, glv.kill);
     } else {
-      Serial.print("GLV --off-- | ");
+      Serial.printf("GLV --off-- rx:%lu | ", glvCount);
     }
     if(millis()-lastTelemRx < 1000){
       Serial.printf("FC %s thr:%4u P:%5.1f R:%5.1f iR:%5.1f iP:%5.1f vib:%4.2f hdg:%+6.1f alt:%5.2f\n",

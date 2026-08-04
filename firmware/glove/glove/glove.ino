@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <Adafruit_BNO08x.h>
+#include <esp_wifi.h>
 
 uint8_t txMac[] = {0x70,0x4B,0xCA,0x45,0xED,0x5C};   // TX MAC
 
@@ -81,6 +82,7 @@ void setup(){
   if(!imuOk) Serial.println("BNO085 NOT FOUND - tilt disabled");
 
   WiFi.mode(WIFI_STA);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   delay(500);
   if(esp_now_init() != ESP_OK){
     Serial.println("ESP-NOW init FAIL");

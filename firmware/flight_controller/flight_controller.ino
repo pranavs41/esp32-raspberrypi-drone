@@ -4,6 +4,7 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <DShotRMT.h>
+#include <esp_wifi.h>
 
 
 #define MOTORS_LIVE 1
@@ -210,6 +211,7 @@ void setup(){
 
 
   WiFi.mode(WIFI_STA);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   if(esp_now_init() != ESP_OK){ Serial.println("ESP-NOW init FAIL"); while(1){} }
   esp_now_register_recv_cb(onRecv);
   Serial.print("FC MAC: "); Serial.println(WiFi.macAddress());
