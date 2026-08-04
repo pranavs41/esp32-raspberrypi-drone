@@ -29,7 +29,7 @@ const int HALL_RING    = 25;   // both halls = fist = secondary KILL
 const float ROLL_NEUTRAL  =   -4.0f;
 const float PITCH_NEUTRAL = -13.0f;
 const float TILT_DEADZONE =   13.0f;   // deg of hand tilt that does nothing
-const float TILT_FULL     =  40.0f;   // deg for full deflection
+const float TILT_FULL     =  65.0f;   // deg for full deflection
 
 // ---- PACKET (must match TX's GlovePacket byte-for-byte) ----
 struct __attribute__((packed)) GlovePacket {
@@ -137,12 +137,12 @@ void loop(){
   float strafe = pitchDelta + rollDelta;    // hand tilt left/right
   float walk   = pitchDelta - rollDelta;    // hand tilt fwd/back
 
-  int16_t lateral = tiltMap(strafe);
+ int16_t lateral = -tiltMap(strafe);
   bool yawMode = (digitalRead(PINCH_RING) == LOW);
 
   if(yawMode){
-    gp.roll = 0;              // no roll while turning
-    gp.yaw  = lateral;        // right tilt = CW
+    gp.roll = 0;
+    gp.yaw  = lateral;
   } else {
     gp.roll = lateral;
     gp.yaw  = 0;

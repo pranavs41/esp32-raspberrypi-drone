@@ -14,7 +14,7 @@
 
 #define USE_FIXED_LEVEL 1
 const float PITCH_OFFSET_FIXED =  -1.5f;
-const float ROLL_OFFSET_FIXED  = -0.24f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
+const float ROLL_OFFSET_FIXED  = -0.5f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
 float YAW_TRIM   = -2.0f;
 float PITCH_TRIM = 5.0f;
 
@@ -48,6 +48,8 @@ bool flowValid=false;
 unsigned long lastFlowMs=0;
 uint8_t flowBuf[16];
 int flowIdx=0;
+float prevFlowX = 0, prevFlowY = 0;
+unsigned long prevFlowMs = 0;
 
 // ---- DEBUG: byte counter (starves the parser - fF stays 0 while this is 1) ----
 #define FLOW_RAW_DEBUG 0
@@ -58,20 +60,22 @@ int flowIdx=0;
 #define VEL_Q_MIN    25      // min flow quality to trust the data
 #define VEL_MAX_ANG  3.5f    // hard clamp on flow-commanded lean
 #define VEL_ENABLE   1       // 0 = fly with damping off
+#define VEL_KD       0.06f   // damping on rate-of-change of flow
+#define VEL_D_MAX    2.0f    // clamp on the D contribution alone
 // ---- altitude hold ----
 #define ALT_ENABLE     1
 #define ALT_KP         180.0f   // throttle units per metre of error
-#define ALT_KI          60.0f   // throttle units per metre-second
-#define ALT_I_MAX      150.0f   // clamp on altitude integral
+#define ALT_KI          30.0f   // throttle units per metre-second
+#define ALT_I_MAX      80.0f   // clamp on altitude integral
 #define ALT_CLIMB_RATE   0.4f   // m/s max target climb
 #define ALT_DESC_RATE    0.2f   // m/s max target descent (deliberately slower)
 #define ALT_MIN_HOLD     0.15f  // don't engage below this
 #define ALT_MAX_HOLD     2.50f  // don't engage above this
 // ---- altitude-aware landing ----
-#define LAND_SLOW_ALT   0.45f   // below this, descend gently
+#define LAND_SLOW_ALT   0.35f   // below this, descend gently
 #define LAND_RATE_HIGH 180.0f   // throttle units/s above LAND_SLOW_ALT
-#define LAND_RATE_LOW   55.0f   // throttle units/s in the slow zone
-#define LAND_TOUCH_ALT  0.10f   // treat as touchdown below this
+#define LAND_RATE_LOW   35.0f   // throttle units/s in the slow zone
+#define LAND_TOUCH_ALT  0.06f   // treat as touchdown below this
 #define LAND_TOUCH_MS    250    // ...held this long
 
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
@@ -107,7 +111,7 @@ const int THR_CENTER=2128,YAW_CENTER=1909,PITCH_CENTER=2173,ROLL_CENTER=1968;
 const int THR_DEADBAND=150;
 const float THR_RATE=0.0007f;
 const int STICK_DEADBAND=150;
-const int YAW_DEADBAND=350;   // intentionally > full ADC range: yaw stick disabled
+const int YAW_DEADBAND=4096;   // intentionally > full ADC range: yaw stick disabled
 const int THR_MAX=1800;
 const int THR_GATE=100;
 const int MOTOR_IDLE=80;

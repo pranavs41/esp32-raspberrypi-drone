@@ -23,7 +23,7 @@ const int THR_CENTER=2128, YAW_CENTER=1909, PITCH_CENTER=2173, ROLL_CENTER=1968;
 #define GLOVE_ENABLE     1
 #define GLOVE_TIMEOUT_MS 300     // no packet this long = fall back to sticks
 #define GLOVE_THR_STEP    18     // ADC counts above centre while index held
-#define GLOVE_SPAN      1400     // ±1000 glove units -> this many ADC counts
+#define GLOVE_SPAN      700     // ±1000 glove units -> this many ADC counts
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
 Packet tx;
