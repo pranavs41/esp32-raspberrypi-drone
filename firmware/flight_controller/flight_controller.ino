@@ -16,7 +16,7 @@
 const float PITCH_OFFSET_FIXED =  -1.5f;
 const float ROLL_OFFSET_FIXED  = -0.5f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 5.0f;
+float PITCH_TRIM = 5.5f;
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
