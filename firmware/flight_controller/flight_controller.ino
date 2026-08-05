@@ -14,7 +14,7 @@
 
 #define USE_FIXED_LEVEL 1
 const float PITCH_OFFSET_FIXED =  -1.5f;
-const float ROLL_OFFSET_FIXED  = -1.25f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
+const float ROLL_OFFSET_FIXED  = -1.05f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
 float YAW_TRIM   = -2.0f;
 float PITCH_TRIM = 6.0f;
 
@@ -56,7 +56,7 @@ unsigned long prevFlowMs = 0;
 // ---- M4: optical flow velocity damping ----
 // SIGN VERIFIED 2026-08: slide left -> fVx positive -> fRA positive -> right lean
 //                        -> opposes drift. No negation needed.
-#define VEL_GAIN     0.375f   // deg lean per (px/frame)
+#define VEL_GAIN     0.375f   // deg lean per (px/frame) //was 0.375
 #define VEL_Q_MIN    25      // min flow quality to trust the data
 #define VEL_MAX_ANG  3.25f    // hard clamp on flow-commanded lean
 #define VEL_ENABLE   1       // 0 = fly with damping off
@@ -64,7 +64,7 @@ unsigned long prevFlowMs = 0;
 #define VEL_D_MAX    2.0f    // clamp on the D contribution alone
 // ---- altitude hold ----
 #define ALT_ENABLE     1
-#define ALT_KP         250.0f   // throttle units per metre of error
+#define ALT_KP         125.0f   // throttle units per metre of error
 #define ALT_KI          40.0f   // throttle units per metre-second
 #define ALT_KD   180.0f
 #define ALT_I_MAX      80.0f   // clamp on altitude integral
@@ -104,6 +104,7 @@ float altTarget = 0;            // <<< NEW
 float altI = 0;                 // <<< NEW
 float altBase = 0;      // throttle at the moment hold engaged
 float altPrev = 0;      // previous altitude, for climb rate
+unsigned long lastAltCalc = 0;
 bool  altHoldActive = false;    // <<< NEW
 unsigned long touchSince = 0;
 
@@ -168,6 +169,7 @@ unsigned long rollPauseUntil = 0;
 unsigned long pitchPauseUntil = 0;
 float prevRollErr = 0;
 float prevPitchErr = 0;
+
 
 
 void resetI(){
@@ -356,8 +358,13 @@ if(flowIdx==12){
       if(landStick && throttleHold > MOTOR_IDLE){
         if(altOk){
           float want = (altM > LAND_SLOW_ALT) ? LAND_RATE_FAST : LAND_RATE_SLOW;
-          float dAlt = (altM - altPrev) / dt;
-          altPrev = altM;
+          static float dAlt = 0;                   // held between lidar samples
+    if(lastAltMs != lastAltCalc){
+      float adt = (lastAltMs - lastAltCalc) / 1000.0f;
+      if(adt > 0.01f && adt < 0.5f) dAlt = (altM - altPrev) / adt;
+      altPrev = altM;
+      lastAltCalc = lastAltMs;
+    }
           throttleHold += (want - dAlt) * LAND_KD * dt;
           throttleHold = constrain(throttleHold, MOTOR_IDLE, THR_MAX);
 
