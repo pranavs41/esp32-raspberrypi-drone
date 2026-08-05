@@ -14,9 +14,9 @@
 
 #define USE_FIXED_LEVEL 1
 const float PITCH_OFFSET_FIXED =  -1.5f;
-const float ROLL_OFFSET_FIXED  = -0.5f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
+const float ROLL_OFFSET_FIXED  = -1.25f; //-1.35  CONVERGED: iR plateaued ~5.2 over 20s hover
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 5.5f;
+float PITCH_TRIM = 6.0f;
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -56,27 +56,31 @@ unsigned long prevFlowMs = 0;
 // ---- M4: optical flow velocity damping ----
 // SIGN VERIFIED 2026-08: slide left -> fVx positive -> fRA positive -> right lean
 //                        -> opposes drift. No negation needed.
-#define VEL_GAIN     0.35f   // deg lean per (px/frame)
+#define VEL_GAIN     0.375f   // deg lean per (px/frame)
 #define VEL_Q_MIN    25      // min flow quality to trust the data
-#define VEL_MAX_ANG  3.5f    // hard clamp on flow-commanded lean
+#define VEL_MAX_ANG  3.25f    // hard clamp on flow-commanded lean
 #define VEL_ENABLE   1       // 0 = fly with damping off
 #define VEL_KD       0.06f   // damping on rate-of-change of flow
 #define VEL_D_MAX    2.0f    // clamp on the D contribution alone
 // ---- altitude hold ----
 #define ALT_ENABLE     1
-#define ALT_KP         180.0f   // throttle units per metre of error
-#define ALT_KI          30.0f   // throttle units per metre-second
+#define ALT_KP         250.0f   // throttle units per metre of error
+#define ALT_KI          40.0f   // throttle units per metre-second
+#define ALT_KD   180.0f
 #define ALT_I_MAX      80.0f   // clamp on altitude integral
 #define ALT_CLIMB_RATE   0.4f   // m/s max target climb
 #define ALT_DESC_RATE    0.2f   // m/s max target descent (deliberately slower)
-#define ALT_MIN_HOLD     0.15f  // don't engage below this
+#define ALT_MIN_HOLD     0.40f  // don't engage below this
 #define ALT_MAX_HOLD     2.50f  // don't engage above this
 // ---- altitude-aware landing ----
 #define LAND_SLOW_ALT   0.35f   // below this, descend gently
 #define LAND_RATE_HIGH 180.0f   // throttle units/s above LAND_SLOW_ALT
-#define LAND_RATE_LOW   35.0f   // throttle units/s in the slow zone
-#define LAND_TOUCH_ALT  0.06f   // treat as touchdown below this
+#define LAND_RATE_LOW   15.0f   // throttle units/s in the slow zone
+#define LAND_TOUCH_ALT  0.04f   // treat as touchdown below this
 #define LAND_TOUCH_MS    250    // ...held this long
+#define LAND_RATE_FAST  -0.35f   // m/s target descent above LAND_SLOW_ALT
+#define LAND_RATE_SLOW  -0.12f   // m/s below it
+#define LAND_KD          400.0f  // throttle per (m/s) of rate error
 
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
   if(len == sizeof(Packet)){
@@ -98,6 +102,8 @@ unsigned long lastAltMs = 0;
 
 float altTarget = 0;            // <<< NEW
 float altI = 0;                 // <<< NEW
+float altBase = 0;      // throttle at the moment hold engaged
+float altPrev = 0;      // previous altitude, for climb rate
 bool  altHoldActive = false;    // <<< NEW
 unsigned long touchSince = 0;
 
@@ -166,6 +172,7 @@ float prevPitchErr = 0;
 
 void resetI(){
   iRoll=0; iPitch=0; iYaw=0;
+  altBase = 0; altPrev = 0;
   headingRel = 0;
   altI = 0; altHoldActive = false; touchSince = 0;   // <<< ADD
   prevRollErr=0; prevPitchErr=0;
@@ -347,26 +354,26 @@ if(flowIdx==12){
       bool landStick = (rx.throttle < LAND_STICK_THR);
 
       if(landStick && throttleHold > MOTOR_IDLE){
-        // altitude-aware descent: fast up high, gentle near the ground
-        float rate = PILOT_LAND_RATE;
         if(altOk){
-          rate = (altM > LAND_SLOW_ALT) ? LAND_RATE_HIGH : LAND_RATE_LOW;
-        }
-        throttleHold -= rate*dt;
+          float want = (altM > LAND_SLOW_ALT) ? LAND_RATE_FAST : LAND_RATE_SLOW;
+          float dAlt = (altM - altPrev) / dt;
+          altPrev = altM;
+          throttleHold += (want - dAlt) * LAND_KD * dt;
+          throttleHold = constrain(throttleHold, MOTOR_IDLE, THR_MAX);
 
-        // touchdown detection
-        if(altOk && altM < LAND_TOUCH_ALT){
-          if(touchSince == 0) touchSince = millis();
-          if(millis() - touchSince > LAND_TOUCH_MS){
+          if(altM < LAND_TOUCH_ALT){
+            if(touchSince == 0) touchSince = millis();
+            if(millis() - touchSince > LAND_TOUCH_MS){
+              armed=false; throttleHold=0; touchSince=0; resetI();
+              Serial.println(">>> TOUCHDOWN - DISARMED");
+            }
+          } else touchSince = 0;
+        } else {
+          throttleHold -= PILOT_LAND_RATE*dt;      // no lidar: old behaviour
+          if(throttleHold <= MOTOR_IDLE){
             armed=false; throttleHold=0; touchSince=0; resetI();
-            Serial.println(">>> TOUCHDOWN - DISARMED");
+            Serial.println(">>> PILOT LANDED & DISARMED");
           }
-        } else touchSince = 0;
-
-        if(throttleHold <= MOTOR_IDLE){
-          armed=false;
-          throttleHold=0; touchSince=0; resetI();
-          Serial.println(">>> PILOT LANDED & DISARMED");
         }
       } else if(!landStick){
         int d=(int)rx.throttle-THR_CENTER;
@@ -386,19 +393,25 @@ if(flowIdx==12){
                     && throttleHold > I_LIFT_THR;
 
   if(altCanHold && !thrStick){
-    if(!altHoldActive){                 // engage: capture target, decay integral
+    if(!altHoldActive){
       altHoldActive = true;
       altTarget = altM;
-      altI *= 0.5f;
+      altBase   = throttleHold;    // hover throttle, captured on engage
+      altPrev   = altM;
+      altI      = 0;
     }
-    float err = altTarget - altM;
-    altI += err * dt * ALT_KI;
-    altI = constrain(altI, -ALT_I_MAX, ALT_I_MAX);
-    float corr = err * ALT_KP + altI;
-    corr = constrain(corr, -120.0f, 120.0f);
-    throttleHold = constrain(throttleHold + corr*dt, 0, THR_MAX);
+    float err  = altTarget - altM;
+    float dAlt = (altM - altPrev) / dt;      // m/s, positive = climbing
+    altPrev = altM;
+
+    altI += err * dt;
+    altI = constrain(altI, -1.5f, 1.5f);
+
+    float corr = err*ALT_KP + altI*ALT_KI - dAlt*ALT_KD;
+    corr = constrain(corr, -200.0f, 200.0f);
+    throttleHold = constrain(altBase + corr, 0, THR_MAX);
   } else {
-    altHoldActive = false;              // freeze: altI persists, pilot has throttle
+    altHoldActive = false;
   }
 #endif
 
