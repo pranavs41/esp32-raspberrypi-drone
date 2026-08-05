@@ -176,6 +176,7 @@ void resetI(){
   iRoll=0; iPitch=0; iYaw=0;
   altBase = 0; altPrev = 0;
   headingRel = 0;
+  lastAltCalc = 0;
   altI = 0; altHoldActive = false; touchSince = 0;   // <<< ADD
   prevRollErr=0; prevPitchErr=0;
   rollPauseUntil=0; pitchPauseUntil=0;
