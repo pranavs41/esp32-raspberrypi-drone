@@ -4,6 +4,7 @@
 #include <Adafruit_BNO08x.h>
 #include <DShotRMT.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>
 
 
 #define MOTORS_LIVE 1
@@ -19,10 +20,10 @@
 //   gx = roll rate (right positive), gy = pitch rate (nose down positive), gz = yaw
 
 #define USE_FIXED_LEVEL 1
-const float PITCH_OFFSET_FIXED =  -1.5f;   // RE-VERIFY: BNO mount differs from MPU
-const float ROLL_OFFSET_FIXED  = -1.25f;   // RE-VERIFY
+const float PITCH_OFFSET_FIXED =  1.8f;   // RE-VERIFY: BNO mount differs from MPU
+const float ROLL_OFFSET_FIXED  = 2.1f;   // RE-VERIFY
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 6.0f;
+float PITCH_TRIM = 13.0f;
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -120,7 +121,7 @@ DShotRMT m4(GPIO_NUM_4, DSHOT300,false);
 
 const int THR_CENTER=2128,YAW_CENTER=1909,PITCH_CENTER=2173,ROLL_CENTER=1968;
 const int THR_DEADBAND=150;
-const float THR_RATE=0.0007f;
+const float THR_RATE=0.0015f;
 const int STICK_DEADBAND=150;
 const int YAW_DEADBAND=4096;
 const int THR_MAX=1800;
@@ -139,9 +140,9 @@ float throttleHold=0;
 
 const float MAX_ANGLE=15.0f;
 const float MAX_YAWRATE=200.0f;
-const float ANGLE_KP=3.0f;
+const float ANGLE_KP=2.75f;
 
-float Kp=1.2f, Kd=0.0f;
+float Kp=1.0f, Kd=0.0f;
 float Ki_roll=0.35f, Ki_pitch=0.35f, Ki_yaw=0.20f;
 float iRoll=0,iPitch=0,iYaw=0, ePrevRoll=0,ePrevPitch=0,ePrevYaw=0;
 
@@ -180,9 +181,9 @@ void resetI(){
 
 
 void enableReports(){
-  bno.enableReport(SH2_ROTATION_VECTOR, 5000);        // 200Hz
-  bno.enableReport(SH2_GYROSCOPE_CALIBRATED, 5000);
-  bno.enableReport(SH2_ACCELEROMETER, 10000);         // 100Hz, for vib only
+  bno.enableReport(SH2_ROTATION_VECTOR, 10000);        // 200Hz
+  bno.enableReport(SH2_GYROSCOPE_CALIBRATED, 10000);
+  bno.enableReport(SH2_ACCELEROMETER, 20000);         // 50Hz, unchanged
 }
 
 
@@ -198,9 +199,17 @@ void setup(){
   Wire.setTimeOut(10);
   delay(200);
 
-  for(int i=0;i<5 && !imuOk;i++){
-    if(bno.begin_I2C(BNO_ADDR)){ imuOk = true; enableReports(); Serial.println("BNO085 ready"); }
-    else { Serial.printf("BNO try %d failed\n", i+1); delay(300); }
+  uint8_t addrs[2] = {0x4B, 0x4A};
+  for(int i=0; i<10 && !imuOk; i++){
+    uint8_t a = addrs[i % 2];
+    if(bno.begin_I2C(a)){
+      imuOk = true;
+      enableReports();
+      Serial.printf("BNO085 ready at 0x%02X\n", a);
+    } else {
+      Serial.printf("BNO try %d at 0x%02X failed\n", i+1, a);
+      delay(400);
+    }
   }
   if(!imuOk){ Serial.println("BNO NOT FOUND"); while(1){ delay(1000); } }
 
@@ -215,7 +224,10 @@ void setup(){
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   if(esp_now_init() != ESP_OK){ Serial.println("ESP-NOW init FAIL"); while(1){} }
   esp_now_register_recv_cb(onRecv);
-  Serial.print("FC MAC: "); Serial.println(WiFi.macAddress());
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  Serial.printf("FC MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+    mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
   Serial.print("Telem size: "); Serial.println(sizeof(Telem));
   Serial.printf("ANGLE MODE (BNO085). FLOW_RAW_DEBUG=%d\n", FLOW_RAW_DEBUG);
   lastLoop=micros();
@@ -247,7 +259,7 @@ void loop(){
     else if(bnoVal.sensorId == SH2_GYROSCOPE_CALIBRATED){
       gRollRate  =  bnoVal.un.gyroscope.x * 57.2958f;   // right positive: matches
       gPitchRate = -bnoVal.un.gyroscope.y * 57.2958f;   // nose down was positive: negate
-      gYaw       = -bnoVal.un.gyroscope.z * 57.2958f;   // CW was negative: negate
+      gYaw       = bnoVal.un.gyroscope.z * 57.2958f;   // CW was negative: negate
     }
     else if(bnoVal.sensorId == SH2_ACCELEROMETER){
       accX = bnoVal.un.accelerometer.x;
@@ -580,8 +592,8 @@ void loop(){
   if(millis()-lastPrint>200){
     lastPrint=millis();
     const char* lnk = linkOk ? "OK" : (linkLost ? "LOST" : "GRACE");
-    Serial.printf("%s thr:%4.0f P:%5.1f R:%5.1f vib:%4.2f iR:%5.1f iP:%5.1f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d fRA:%5.2f fPA:%5.2f hdg:%+6.1f alt:%5.2f imu:%d LNK:%s\n",
-      armed?"ARM":"DIS", throttleHold, pitchAngle, rollAngle, sqrtf(vibRMS),
+    Serial.printf("%s thr:%4.0f m:%4d/%4d/%4d/%4d P:%5.1f R:%5.1f vib:%4.2f iR:%5.1f iP:%5.1f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%d fRA:%5.2f fPA:%5.2f hdg:%+6.1f alt:%5.2f imu:%d LNK:%s\n",
+      armed?"ARM":"DIS", throttleHold, d1, d2, d3, d4, pitchAngle, rollAngle, sqrtf(vibRMS),
       iRoll, iPitch, flowVelX, flowVelY, flowQ, flowFresh, flowRollAdj, flowPitchAdj, headingRel,
       altOk?altM:-1.0f, imuFresh, lnk);
   }
