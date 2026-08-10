@@ -21,9 +21,10 @@
 
 #define USE_FIXED_LEVEL 1
 const float PITCH_OFFSET_FIXED =  1.8f;   // RE-VERIFY: BNO mount differs from MPU
-const float ROLL_OFFSET_FIXED  = 2.1f;   // RE-VERIFY
+const float ROLL_OFFSET_FIXED  = 1.5f;   // RE-VERIFY
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 13.0f;
+float PITCH_TRIM = 9.5f;
+float ROLL_TRIM  = 1.0f;    // start at zero, bracket from there
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -60,9 +61,9 @@ unsigned long prevFlowMs = 0;
 #define FLOW_RAW_DEBUG 0
 
 // ---- M4: optical flow velocity damping ----
-#define VEL_GAIN     0.375f
-#define VEL_Q_MIN    25
-#define VEL_MAX_ANG  3.25f
+#define VEL_GAIN     0.37f
+#define VEL_Q_MIN    23
+#define VEL_MAX_ANG  3.5f
 #define VEL_ENABLE   1
 #define VEL_KD       0.06f
 #define VEL_D_MAX    2.0f
@@ -78,7 +79,7 @@ unsigned long prevFlowMs = 0;
 // ---- landing (slow bleed to a floor) ----
 #define LAND_BLEED      12.0f
 #define LAND_FLOOR     660.0f
-#define LAND_TOUCH_ALT   0.04f
+#define LAND_TOUCH_ALT   0.08f
 #define LAND_TOUCH_MS    250
 
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len){
@@ -140,9 +141,9 @@ float throttleHold=0;
 
 const float MAX_ANGLE=15.0f;
 const float MAX_YAWRATE=200.0f;
-const float ANGLE_KP=2.75f;
+const float ANGLE_KP=2.4f;
 
-float Kp=1.0f, Kd=0.0f;
+float Kp=0.80f, Kd=0.005f;
 float Ki_roll=0.35f, Ki_pitch=0.35f, Ki_yaw=0.20f;
 float iRoll=0,iPitch=0,iYaw=0, ePrevRoll=0,ePrevPitch=0,ePrevYaw=0;
 
@@ -556,10 +557,10 @@ void loop(){
   float outYaw   = Kp*eYaw   + Ki_yaw  *iYaw                     + Kd*dY;
 
   float base=throttleHold;
-  float s1=base+outPitch+PITCH_TRIM-outRoll+outYaw-YAW_TRIM;
-  float s2=base-outPitch-PITCH_TRIM-outRoll-outYaw+YAW_TRIM;
-  float s3=base+outPitch+PITCH_TRIM+outRoll-outYaw+YAW_TRIM;
-  float s4=base-outPitch-PITCH_TRIM+outRoll+outYaw-YAW_TRIM;
+  float s1=base+outPitch+PITCH_TRIM-outRoll-ROLL_TRIM+outYaw-YAW_TRIM;
+  float s2=base-outPitch-PITCH_TRIM-outRoll-ROLL_TRIM-outYaw+YAW_TRIM;
+  float s3=base+outPitch+PITCH_TRIM+outRoll+ROLL_TRIM-outYaw+YAW_TRIM;
+  float s4=base-outPitch-PITCH_TRIM+outRoll+ROLL_TRIM+outYaw-YAW_TRIM;
 
   int d1=0,d2=0,d3=0,d4=0;
   if(armed && throttleHold>THR_GATE){
