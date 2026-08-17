@@ -23,8 +23,8 @@
 const float PITCH_OFFSET_FIXED =  1.8f;   // RE-VERIFY: BNO mount differs from MPU
 const float ROLL_OFFSET_FIXED  = 1.5f;   // RE-VERIFY
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 9.5f;
-float ROLL_TRIM  = 1.0f;    // start at zero, bracket from there
+float PITCH_TRIM = 8.2f; //more trim = more bakcward
+float ROLL_TRIM  = 0.7f;    // start at zero, bracket from there
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -61,12 +61,14 @@ unsigned long prevFlowMs = 0;
 #define FLOW_RAW_DEBUG 0
 
 // ---- M4: optical flow velocity damping ----
-#define VEL_GAIN     0.37f
+#define VEL_GAIN     0.40f
 #define VEL_Q_MIN    23
 #define VEL_MAX_ANG  3.5f
 #define VEL_ENABLE   1
 #define VEL_KD       0.06f
 #define VEL_D_MAX    2.0f
+#define VEL_Q_ON   20
+#define VEL_Q_OFF  12
 
 // ---- altitude hold ----
 #define ALT_ENABLE     1
@@ -141,9 +143,9 @@ float throttleHold=0;
 
 const float MAX_ANGLE=15.0f;
 const float MAX_YAWRATE=200.0f;
-const float ANGLE_KP=2.4f;
+const float ANGLE_KP=2.45f;
 
-float Kp=0.80f, Kd=0.005f;
+float Kp=0.80f, Kd=0.006f;
 float Ki_roll=0.35f, Ki_pitch=0.35f, Ki_yaw=0.20f;
 float iRoll=0,iPitch=0,iYaw=0, ePrevRoll=0,ePrevPitch=0,ePrevYaw=0;
 
@@ -460,6 +462,11 @@ void loop(){
   // ---- M4: flow damping ----
   float flowRollAdj = 0, flowPitchAdj = 0;
 #if VEL_ENABLE
+ static bool flowEngaged = false;
+  if(flowQ >= VEL_Q_ON) flowEngaged = true;
+  if(flowQ <= VEL_Q_OFF) flowEngaged = false;
+
+
   if(flowFresh && flowQ >= VEL_Q_MIN && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
     float fdt = (millis() - prevFlowMs) / 1000.0f;
     float dX = 0, dY = 0;
