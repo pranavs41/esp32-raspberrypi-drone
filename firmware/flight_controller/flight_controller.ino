@@ -23,8 +23,8 @@
 const float PITCH_OFFSET_FIXED =  1.8f;   // RE-VERIFY: BNO mount differs from MPU
 const float ROLL_OFFSET_FIXED  = 1.5f;   // RE-VERIFY
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 8.2f; //more trim = more bakcward
-float ROLL_TRIM  = 0.7f;    // start at zero, bracket from there
+float PITCH_TRIM = 9.5f; //9 backward
+float ROLL_TRIM  = 0.0f;    // 0.7 left drift, 
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -64,11 +64,14 @@ unsigned long prevFlowMs = 0;
 #define VEL_GAIN     0.40f
 #define VEL_Q_MIN    23
 #define VEL_MAX_ANG  3.5f
-#define VEL_ENABLE   1
+#define VEL_ENABLE   0
 #define VEL_KD       0.06f
 #define VEL_D_MAX    2.0f
 #define VEL_Q_ON   20
 #define VEL_Q_OFF  12
+#define POS_GAIN     0.9f    // deg lean per metre of displacement
+#define POS_MAX_ANG  4.0f    // clamp on the position term alone
+#define POS_LEAK     0.15f   // per-second decay - bleeds off accumulated error
 
 // ---- altitude hold ----
 #define ALT_ENABLE     1
@@ -100,6 +103,7 @@ bool imuOk = false;
 unsigned long lastImuMs = 0;
 
 float pitchAngle=0, rollAngle=0, pitchOffset=0, rollOffset=0;
+float posX = 0, posY = 0;    // estimated displacement, metres
 float gPitchRate=0, gRollRate=0, gYaw=0;
 float accX=0, accY=0, accZ=9.81f;
 float headingRel = 0;
@@ -459,15 +463,14 @@ void loop(){
     }
   }
 
-  // ---- M4: flow damping ----
+   // ---- M4: flow damping + position hold ----
   float flowRollAdj = 0, flowPitchAdj = 0;
 #if VEL_ENABLE
- static bool flowEngaged = false;
+  static bool flowEngaged = false;
   if(flowQ >= VEL_Q_ON) flowEngaged = true;
   if(flowQ <= VEL_Q_OFF) flowEngaged = false;
 
-
-  if(flowFresh && flowQ >= VEL_Q_MIN && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
+  if(flowFresh && flowEngaged && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
     float fdt = (millis() - prevFlowMs) / 1000.0f;
     float dX = 0, dY = 0;
     if(fdt > 0.01f && fdt < 0.5f){
@@ -476,15 +479,28 @@ void loop(){
     }
     prevFlowX = flowVelX; prevFlowY = flowVelY; prevFlowMs = millis();
 
+    // ---- position integration ----
+    if(altOk && fdt > 0.01f && fdt < 0.5f){
+      posX += flowVelX * altM * fdt * 0.01f;
+      posY += flowVelY * altM * fdt * 0.01f;
+      posX -= posX * POS_LEAK * fdt;
+      posY -= posY * POS_LEAK * fdt;
+      posX = constrain(posX, -3.0f, 3.0f);
+      posY = constrain(posY, -3.0f, 3.0f);
+    }
+    float pRollAdj  = constrain(posX * POS_GAIN, -POS_MAX_ANG, POS_MAX_ANG);
+    float pPitchAdj = constrain(posY * POS_GAIN, -POS_MAX_ANG, POS_MAX_ANG);
+
     float dRollAdj  = constrain(dX * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
     float dPitchAdj = constrain(dY * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
 
-    flowRollAdj  = constrain(flowVelX*VEL_GAIN + dRollAdj,  -VEL_MAX_ANG, VEL_MAX_ANG);
-    flowPitchAdj = constrain(flowVelY*VEL_GAIN + dPitchAdj, -VEL_MAX_ANG, VEL_MAX_ANG);
+    flowRollAdj  = constrain(flowVelX*VEL_GAIN + dRollAdj  + pRollAdj,  -VEL_MAX_ANG, VEL_MAX_ANG);
+    flowPitchAdj = constrain(flowVelY*VEL_GAIN + dPitchAdj + pPitchAdj, -VEL_MAX_ANG, VEL_MAX_ANG);
     rollSet  += flowRollAdj;
     pitchSet += flowPitchAdj;
   } else {
     prevFlowMs = 0;
+    posX = 0; posY = 0;
   }
 #endif
 
