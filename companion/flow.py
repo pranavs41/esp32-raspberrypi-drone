@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+#
+# !! STALE - DO NOT COPY TO THE PI !!
+# This is the pre-altitude version: it emits a 10-byte packet and never reads
+# the VL53L1X. The FC parser now expects 12 bytes with altitude at [9:11] and
+# the XOR checksum at [11], so this script's frames are silently dropped.
+# The working version exists only on the Pi's SD card. Pull it in and replace
+# this file - see hardware/pinout.md.txt for the current wire format.
 # flow.py - optical flow pipeline + UART packet to flight controller (M3)
 # Debug stream: http://<pi-ip>:8080
 # Packet: [AA][55][velX:i16*100][velY:i16*100][q:u8][flags:u8][seq:u8][xor-cksum]

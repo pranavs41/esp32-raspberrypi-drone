@@ -7,9 +7,13 @@
 | GPIO33 | Motor 2 (TR, CCW) — DShot300 |
 | GPIO25 | Motor 3 (BL, CCW) — DShot300 |
 | GPIO4  | Motor 4 (TL, CW) — DShot300 |
-| GPIO21 | I2C SDA → MPU6050 |
-| GPIO22 | I2C SCL → MPU6050 (400kHz) |
+| GPIO21 | I2C SDA → BNO085 (addr 0x4B, falls back to 0x4A) |
+| GPIO22 | I2C SCL → BNO085 (100kHz) |
 | GPIO27 | UART2 RX ← Pi flow link (115200) |
+| GPIO17 | UART2 TX — wired but unused, Pi link is one-directional |
+
+⚠ I²C runs at **100kHz, not 400** — the BNO085 stretches the clock and 400k is
+unreliable on the ESP32. The old MPU6050 ran at 400k; don't copy that number back.
 
 ## Transmitter ESP32
 | Pin | Function |
@@ -21,35 +25,61 @@
 | GPIO16 | Arm switch (INPUT_PULLUP, LOW = armed) |
 
 Stick centers: THR 2128 · YAW 1909 · PITCH 2173 · ROLL 1968
+(hardcoded identically in both transmitter.ino and flight_controller.ino — change both)
+
+## Glove ESP32
+| Pin | Function |
+|-----|----------|
+| GPIO13 | Index pinch — throttle up (INPUT_PULLUP, LOW = held) |
+| GPIO14 | Middle pinch — land |
+| GPIO27 | Ring pinch — remaps left/right tilt to yaw |
+| GPIO26 | Pinky pinch — KILL |
+| GPIO32 | Hall, index |
+| GPIO25 | Hall, ring — both halls = fist = secondary KILL |
+| SDA/SCL | default Wire pins → BNO085 @ 0x4B |
+
+Tilt: 13° deadzone, full deflection at 65°.
+Neutral offsets: pitch −13.0°, roll −4.0°.
 
 ## Raspberry Pi 3B+
 | Pin | Function |
 |-----|----------|
-| Pin 8 (GPIO14/TXD) | → ESP32 GPIO16 (flow packets) |
+| Pin 8 (GPIO14/TXD) | → ESP32 **GPIO27** (flow packets) |
 | Pin 6 (GND) | common ground |
 | 5V via GPIO header | ← buck converter (bypasses input fuse) |
 | CSI | OV5647 camera, M12 lens, focused @ ~1.5m |
+| I²C | VL53L1X ToF, down-facing (~3m, medium mode) |
 
 ## Radio
-- Drone ↔ TX: ESP-NOW. FC MAC: B4:BF:E9:60:89:D0
-- Control 50Hz up · telemetry 10Hz down
+- Drone ↔ TX: ESP-NOW, channel 1 fixed on all three nodes
+- FC MAC: 48:9D:31:04:AA:F4 (the target in transmitter.ino)
+- TX MAC: 70:4B:CA:45:ED:5C (the target in glove.ino)
+- Control 50Hz up · telemetry 10Hz down · glove 50Hz → TX
+- TX dispatches inbound ESP-NOW on length alone: 41B = Telem, 10B = GlovePacket
 - Will add antenna
 
 ## Flow packet (Pi → FC)
 115200 baud, 30Hz, one-directional (Pi transmits, FC listens)
 
-| Byte | Field | Notes |
-|------|-------|-------|
-| 0-1  | sync  | 0xAA 0x55 |
-| 2-3  | velX  | int16, little-endian, pixels/frame × 100 |
-| 4-5  | velY  | int16, little-endian, pixels/frame × 100 |
-| 6    | quality | uint8, tracked feature count |
-| 7    | flags | bit0 = valid (quality >= MIN_FEATURES) |
-| 8    | seq   | rolling counter |
-| 9    | cksum | XOR of bytes 2-8 |
+| Byte  | Field   | Notes |
+|-------|---------|-------|
+| 0-1   | sync    | 0xAA 0x55 |
+| 2-3   | velX    | int16, little-endian, pixels/frame × 100 |
+| 4-5   | velY    | int16, little-endian, pixels/frame × 100 |
+| 6     | quality | uint8, tracked feature count |
+| 7     | flags   | bit0 = valid (quality >= MIN_FEATURES) |
+| 8     | seq     | rolling counter |
+| 9-10  | alt     | uint16, little-endian, centimetres from the VL53L1X |
+| 11    | cksum   | XOR of bytes 2-10 |
 
-**Total: 10 bytes.** FC treats data as stale after 200ms without a valid packet
-(`flowFresh` gate) and falls back to unassisted flight.
+**Total: 12 bytes.** FC treats flow as stale after 200ms without a valid packet
+(`flowFresh` gate) and altitude as stale after 300ms (`altOk`), falling back to
+unassisted flight. Altitude is only accepted when 0 < alt < 400cm.
 
-⚠ Originally mis-specced as 12 bytes — the FC parser waited for a frame length
-that never arrived, so every packet was silently dropped. Cost several days.
+⚠ This grew from 10 bytes to 12 when altitude was folded in. `companion/flow.py`
+in this repo is still the **10-byte** version and does not read the ToF at all —
+the working 12-byte script lives only on the Pi and was never committed.
+
+⚠ History: originally mis-specced in the other direction — the FC parser waited
+for a frame length the Pi never sent, so every packet was silently dropped.
+Cost several days. Both ends must agree on length *and* checksum span.
