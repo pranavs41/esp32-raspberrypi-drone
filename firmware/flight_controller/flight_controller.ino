@@ -81,7 +81,7 @@ unsigned long prevFlowMs = 0;
 #define FLOW_HDG_SIGN   +1.0f
 
 // ---- altitude hold ----
-#define ALT_ENABLE     1
+#define ALT_ENABLE     0
 #define ALT_KP         120.0f
 #define ALT_KI          40.0f
 #define ALT_KD         180.0f
