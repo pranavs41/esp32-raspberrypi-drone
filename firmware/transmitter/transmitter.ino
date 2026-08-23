@@ -38,10 +38,12 @@ volatile bool glvFresh = false;
 unsigned long lastGloveRx = 0;
 volatile unsigned long glvCount = 0;
 
-// ---- TELEMETRY (must match FC struct exactly - 41 bytes) ----
+// ---- TELEMETRY (must match FC struct exactly - 57 bytes) ----
 struct __attribute__((packed)) Telem {
   float pitch, roll, iR, iP, vib;
   float fVx, fVy;
+  float fRA, fPA;
+  float pX, pY;
   float hdg;
   float alt;
   uint16_t thr;
@@ -145,9 +147,11 @@ void loop(){
       Serial.printf("GLV --off-- rx:%lu | ", glvCount);
     }
     if(millis()-lastTelemRx < 1000){
-      Serial.printf("FC %s thr:%4u P:%5.1f R:%5.1f iR:%5.1f iP:%5.1f vib:%4.2f hdg:%+6.1f alt:%5.2f\n",
+      Serial.printf("FC %s thr:%4u P:%5.1f R:%5.1f iR:%5.1f iP:%5.1f vib:%4.2f hdg:%+6.1f alt:%5.2f fVx:%6.2f fVy:%6.2f fQ:%3u fF:%u fRA:%5.2f fPA:%5.2f pX:%+5.2f pY:%+5.2f\n",
         telem.armd?"ARM":"DIS", telem.thr, telem.pitch, telem.roll,
-        telem.iR, telem.iP, telem.vib, telem.hdg, telem.alt);
+        telem.iR, telem.iP, telem.vib, telem.hdg, telem.alt,
+        telem.fVx, telem.fVy, telem.fQ, telem.fF,
+        telem.fRA, telem.fPA, telem.pX, telem.pY);
     } else {
       Serial.println("FC --no telem--");
     }

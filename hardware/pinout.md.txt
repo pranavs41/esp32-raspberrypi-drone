@@ -55,7 +55,7 @@ Neutral offsets: pitch −13.0°, roll −4.0°.
 - FC MAC: 48:9D:31:04:AA:F4 (the target in transmitter.ino)
 - TX MAC: 70:4B:CA:45:ED:5C (the target in glove.ino)
 - Control 50Hz up · telemetry 10Hz down · glove 50Hz → TX
-- TX dispatches inbound ESP-NOW on length alone: 41B = Telem, 10B = GlovePacket
+- TX dispatches inbound ESP-NOW on length alone: 57B = Telem, 10B = GlovePacket
 - Will add antenna
 
 ## Flow packet (Pi → FC)

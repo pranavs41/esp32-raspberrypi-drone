@@ -23,8 +23,8 @@
 const float PITCH_OFFSET_FIXED =  1.8f;   // RE-VERIFY: BNO mount differs from MPU
 const float ROLL_OFFSET_FIXED  = 1.5f;   // RE-VERIFY
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 9.5f; //9 backward
-float ROLL_TRIM  = 0.0f;    // 0.7 left drift, 
+float PITCH_TRIM = 10.0f; //POSITIVE IS FORWARD
+float ROLL_TRIM  = -0.50f;    // MORE NEGATIVE EQUALS RIGHT
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -37,6 +37,8 @@ unsigned long lastReceive=0;
 struct __attribute__((packed)) Telem {
   float pitch, roll, iR, iP, vib;
   float fVx, fVy;
+  float fRA, fPA;
+  float pX, pY;
   float hdg;
   float alt;
   uint16_t thr;
@@ -64,14 +66,19 @@ unsigned long prevFlowMs = 0;
 #define VEL_GAIN     0.40f
 #define VEL_Q_MIN    23
 #define VEL_MAX_ANG  3.5f
-#define VEL_ENABLE   0
-#define VEL_KD       0.06f
+#define VEL_ENABLE   1
+#define VEL_KD       0.00f
 #define VEL_D_MAX    2.0f
 #define VEL_Q_ON   20
 #define VEL_Q_OFF  12
 #define POS_GAIN     0.9f    // deg lean per metre of displacement
 #define POS_MAX_ANG  4.0f    // clamp on the position term alone
 #define POS_LEAK     0.15f   // per-second decay - bleeds off accumulated error
+// angular size of one pixel = 2*tan(FOV/2)/W. 0.0036 = 60deg lens at 320px.
+// CALIBRATE: translate a known 1.00m at a known height, check pX reads 1.00.
+#define FLOW_RAD_PER_PX 0.0036f
+// flip to -1.0f if position hold pushes the wrong way after the drone yaws
+#define FLOW_HDG_SIGN   +1.0f
 
 // ---- altitude hold ----
 #define ALT_ENABLE     1
@@ -466,33 +473,59 @@ void loop(){
    // ---- M4: flow damping + position hold ----
   float flowRollAdj = 0, flowPitchAdj = 0;
 #if VEL_ENABLE
-  static bool flowEngaged = false;
+  static bool  flowEngaged = false;
+  static bool  posEngaged  = false;
+  static float posHdg0     = 0;
+  static float flowDX = 0, flowDY = 0;
   if(flowQ >= VEL_Q_ON) flowEngaged = true;
   if(flowQ <= VEL_Q_OFF) flowEngaged = false;
 
   if(flowFresh && flowEngaged && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
-    float fdt = (millis() - prevFlowMs) / 1000.0f;
-    float dX = 0, dY = 0;
-    if(fdt > 0.01f && fdt < 0.5f){
-      dX = (flowVelX - prevFlowX) / fdt;
-      dY = (flowVelY - prevFlowY) / fdt;
-    }
-    prevFlowX = flowVelX; prevFlowY = flowVelY; prevFlowMs = millis();
+    if(!posEngaged){ posEngaged = true; posHdg0 = headingRel; }
 
-    // ---- position integration ----
-    if(altOk && fdt > 0.01f && fdt < 0.5f){
-      posX += flowVelX * altM * fdt * 0.01f;
-      posY += flowVelY * altM * fdt * 0.01f;
-      posX -= posX * POS_LEAK * fdt;
-      posY -= posY * POS_LEAK * fdt;
-      posX = constrain(posX, -3.0f, 3.0f);
-      posY = constrain(posY, -3.0f, 3.0f);
-    }
-    float pRollAdj  = constrain(posX * POS_GAIN, -POS_MAX_ANG, POS_MAX_ANG);
-    float pPitchAdj = constrain(posY * POS_GAIN, -POS_MAX_ANG, POS_MAX_ANG);
+    // heading reference is captured on engage - posX/posY live in THAT frame,
+    // not the body frame, so yawing under the hold doesn't smear the estimate
+    float th = (headingRel - posHdg0) * FLOW_HDG_SIGN * 0.0174533f;
+    float cs = cosf(th), sn = sinf(th);
 
-    float dRollAdj  = constrain(dX * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
-    float dPitchAdj = constrain(dY * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
+    // this block is reached every loop (~500Hz) but flow only lands at 30Hz -
+    // step the integrator on NEW packets only, or one sample gets counted ~16x
+    if(lastFlowMs != prevFlowMs){
+      float fdt   = (lastFlowMs - prevFlowMs) / 1000.0f;
+      bool  fdtOk = (prevFlowMs != 0) && fdt > 0.01f && fdt < 0.5f;
+      prevFlowMs  = lastFlowMs;
+
+      if(fdtOk){
+        flowDX = (flowVelX - prevFlowX) / fdt;
+        flowDY = (flowVelY - prevFlowY) / fdt;
+      }
+      prevFlowX = flowVelX; prevFlowY = flowVelY;
+
+      // ---- position integration ----
+      // flowVel is pixels PER FRAME - already a displacement, so no dt here.
+      // px * (rad/px) * height = metres.
+      if(altOk){
+        float refX = flowVelX*cs - flowVelY*sn;   // body -> heading-reference frame
+        float refY = flowVelX*sn + flowVelY*cs;
+        posX += refX * altM * FLOW_RAD_PER_PX;
+        posY += refY * altM * FLOW_RAD_PER_PX;
+        if(fdtOk){
+          posX -= posX * POS_LEAK * fdt;
+          posY -= posY * POS_LEAK * fdt;
+        }
+        posX = constrain(posX, -3.0f, 3.0f);
+        posY = constrain(posY, -3.0f, 3.0f);
+      }
+    }
+
+    // correction is computed in the reference frame, then rotated back to body
+    float cX = constrain(posX * POS_GAIN, -POS_MAX_ANG, POS_MAX_ANG);
+    float cY = constrain(posY * POS_GAIN, -POS_MAX_ANG, POS_MAX_ANG);
+    float pRollAdj  =  cX*cs + cY*sn;
+    float pPitchAdj = -cX*sn + cY*cs;
+
+    float dRollAdj  = constrain(flowDX * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
+    float dPitchAdj = constrain(flowDY * VEL_KD, -VEL_D_MAX, VEL_D_MAX);
 
     flowRollAdj  = constrain(flowVelX*VEL_GAIN + dRollAdj  + pRollAdj,  -VEL_MAX_ANG, VEL_MAX_ANG);
     flowPitchAdj = constrain(flowVelY*VEL_GAIN + dPitchAdj + pPitchAdj, -VEL_MAX_ANG, VEL_MAX_ANG);
@@ -500,6 +533,8 @@ void loop(){
     pitchSet += flowPitchAdj;
   } else {
     prevFlowMs = 0;
+    posEngaged = false;
+    flowDX = 0; flowDY = 0;
     posX = 0; posY = 0;
   }
 #endif
@@ -605,6 +640,8 @@ void loop(){
     tl.iR = iRoll; tl.iP = iPitch; tl.vib = sqrtf(vibRMS);
     tl.fVx = flowVelX;
     tl.fVy = flowVelY;
+    tl.fRA = flowRollAdj; tl.fPA = flowPitchAdj;
+    tl.pX  = posX;        tl.pY  = posY;
     tl.hdg = headingRel;
     tl.alt = altOk ? altM : -1.0f;
     tl.thr = (uint16_t)throttleHold; tl.armd = armed ? 1 : 0;

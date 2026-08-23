@@ -18,7 +18,7 @@ Glove control mapping
 Tilt fwd/back = pitch, left/right = roll (13° deadzone, full at 65°). Ring held remaps left/right tilt to yaw. Index held ramps throttle up and freezes on release. Middle held lands. Pinky or fist kills. Arm stays on the TX switch, deliberately not on the glove.
 
 Wire protocols
-Four formats, all silent-failure on mismatch: TX→FC Packet (9B), FC→TX Telem (41B), Pi→FC framed+XOR (12B), Glove→TX GlovePacket (10B). Both FC and TX print sizeof(Telem) at boot and must agree.
+Four formats, all silent-failure on mismatch: TX→FC Packet (9B), FC→TX Telem (57B), Pi→FC framed+XOR (12B), Glove→TX GlovePacket (10B). Both FC and TX print sizeof(Telem) at boot and must agree.
 
 Status
 
