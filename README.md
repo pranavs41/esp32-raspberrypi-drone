@@ -28,10 +28,10 @@ Status
 - [x] M3: flow → FC UART link
 - [x] M4: velocity damping — vision drift-kill (gain-limited by loop delay)
 - [x] ToF altitude hold + altitude-aware landing (landing path untested in flight)
-- [ ] Glove transmitter
-- [ ] Flow scaling by height
-- [ ] Rotation compensation on flow
-- [ ] Forward-facing ToF for wall detection
+- [x] Glove transmitter
+- [x] Flow scaling by height
+- [x] Rotation compensation on flow
+- [x] Forward-facing ToF for wall detection
 
 Known limits
 
