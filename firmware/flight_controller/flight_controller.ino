@@ -23,8 +23,8 @@
 const float PITCH_OFFSET_FIXED =  1.8f;   // RE-VERIFY: BNO mount differs from MPU
 const float ROLL_OFFSET_FIXED  = 1.5f;   // RE-VERIFY
 float YAW_TRIM   = -2.0f;
-float PITCH_TRIM = 10.0f; //POSITIVE IS FORWARD
-float ROLL_TRIM  = -0.50f;    // MORE NEGATIVE EQUALS RIGHT
+float PITCH_TRIM = 10.5f; //POSITIVE IS FORWARD
+float ROLL_TRIM  = -0.60f;    // MORE NEGATIVE EQUALS RIGHT
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -71,21 +71,29 @@ unsigned long prevFlowMs = 0;
 #define VEL_D_MAX    2.0f
 #define VEL_Q_ON   20
 #define VEL_Q_OFF  12
-#define POS_GAIN     0.9f    // deg lean per metre of displacement
+#define POS_GAIN     0.0f    // deg lean per metre of displacement
 #define POS_MAX_ANG  4.0f    // clamp on the position term alone
 #define POS_LEAK     0.15f   // per-second decay - bleeds off accumulated error
 // angular size of one pixel = 2*tan(FOV/2)/W. 0.0036 = 60deg lens at 320px.
 // CALIBRATE: translate a known 1.00m at a known height, check pX reads 1.00.
+// BENCH CALIBRATION ONLY. 1 = let posX/posY integrate while disarmed on the
+// ground so FLOW_RAD_PER_PX can be measured. SET BACK TO 0 BEFORE FLYING -
+// with this on, position hold keeps integrating through stick input.
+#define FLOW_CAL 0
 #define FLOW_RAD_PER_PX 0.0036f
 // flip to -1.0f if position hold pushes the wrong way after the drone yaws
 #define FLOW_HDG_SIGN   +1.0f
 
 // ---- altitude hold ----
-#define ALT_ENABLE     0
+#define ALT_ENABLE     1
 #define ALT_KP         120.0f
 #define ALT_KI          40.0f
-#define ALT_KD         180.0f
+#define ALT_KD          80.0f   // ~critical damping for ALT_KP 120 on this airframe
+#define ALT_D_LPF        0.30f   // low-pass on dAlt - tames 1cm lidar quantisation
 #define ALT_MIN_HOLD     0.40f
+#define ALT_MIN_ON       0.45f   // engage above this...
+#define ALT_MIN_OFF      0.35f   // ...disengage below this (hysteresis)
+#define ALT_I_CLAMP      4.0f    // was 1.5: x ALT_KI gives the trim authority
 #define ALT_MAX_HOLD     2.50f
 
 // ---- landing (slow bleed to a floor) ----
@@ -108,6 +116,12 @@ Adafruit_BNO08x bno;
 sh2_SensorValue_t bnoVal;
 bool imuOk = false;
 unsigned long lastImuMs = 0;
+
+// ---- IMU stall recovery (disarmed only) ----
+#define IMU_RECOVER_AFTER  1000   // ms of stale IMU before attempting
+#define IMU_RECOVER_EVERY  2000   // ms between attempts
+unsigned long lastImuRecover = 0;
+uint16_t imuTries = 0, imuOks = 0;
 
 float pitchAngle=0, rollAngle=0, pitchOffset=0, rollOffset=0;
 float posX = 0, posY = 0;    // estimated displacement, metres
@@ -201,11 +215,59 @@ void enableReports(){
 }
 
 
+// Clock out a slave that is holding SDA low, then re-open the bus.
+void i2cUnstick(){
+  Wire.end();
+  pinMode(22, OUTPUT);        // SCL
+  pinMode(21, INPUT_PULLUP);  // SDA
+  for(int i=0;i<9;i++){
+    digitalWrite(22,LOW);  delayMicroseconds(5);
+    digitalWrite(22,HIGH); delayMicroseconds(5);
+  }
+  pinMode(21, OUTPUT);        // manual STOP
+  digitalWrite(21,LOW);  delayMicroseconds(5);
+  digitalWrite(22,HIGH); delayMicroseconds(5);
+  digitalWrite(21,HIGH); delayMicroseconds(5);
+  Wire.begin(21,22);
+  Wire.setClock(100000);
+  Wire.setTimeOut(10);
+}
+
+// Full software re-init. Returns false if the BNO is hard-hung, in which
+// case only a power cycle (or a wired RST pin) will bring it back.
+bool imuRecover(){
+  imuTries++;
+  sh2_close();
+  i2cUnstick();
+  delay(50);
+  if(!bno.begin_I2C(BNO_ADDR)) return false;
+  enableReports();
+  imuOks++;
+  return true;
+}
+
 void motorsOff(){ m1.sendThrottle(0);m2.sendThrottle(0);m3.sendThrottle(0);m4.sendThrottle(0); }
 
 
 void setup(){
   Serial.begin(115200); delay(200);
+
+  // Why did we just boot? Repeated ESC arm tones mean setup() is re-running -
+  // this says whether that is power (BROWNOUT), a crash (PANIC), or a stall (WDT).
+  esp_reset_reason_t rr = esp_reset_reason();
+  const char* rn = "OTHER";
+  switch(rr){
+    case ESP_RST_POWERON:  rn = "POWERON";  break;
+    case ESP_RST_BROWNOUT: rn = "BROWNOUT"; break;
+    case ESP_RST_PANIC:    rn = "PANIC";    break;
+    case ESP_RST_INT_WDT:  rn = "INT_WDT";  break;
+    case ESP_RST_TASK_WDT: rn = "TASK_WDT"; break;
+    case ESP_RST_WDT:      rn = "WDT";      break;
+    case ESP_RST_SW:       rn = "SW_RESET"; break;
+    case ESP_RST_EXT:      rn = "EXT_PIN";  break;
+    default: break;
+  }
+  Serial.printf(">>> BOOT - reset reason: %s (%d)\n", rn, (int)rr);
   Serial2.begin(115200, SERIAL_8N1, 27, 17);
 
   Wire.begin(21,22);
@@ -244,6 +306,9 @@ void setup(){
     mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
   Serial.print("Telem size: "); Serial.println(sizeof(Telem));
   Serial.printf("ANGLE MODE (BNO085). FLOW_RAW_DEBUG=%d\n", FLOW_RAW_DEBUG);
+#if FLOW_CAL
+  Serial.println("*** FLOW_CAL=1 - BENCH ONLY, DO NOT FLY ***");
+#endif
   lastLoop=micros();
 }
 
@@ -283,6 +348,17 @@ void loop(){
   }
 
   bool imuFresh = (millis() - lastImuMs) < 100;
+
+  // ---- IMU stall recovery: DISARMED ONLY. Never in flight - begin_I2C
+  // blocks for ~50ms+ and comes back with no attitude.
+  if(!armed && !imuFresh
+     && (millis() - lastImuMs)      > IMU_RECOVER_AFTER
+     && (millis() - lastImuRecover) > IMU_RECOVER_EVERY){
+    lastImuRecover = millis();
+    bool ok = imuRecover();
+    Serial.printf(">>> IMU STALL - recovery %s (try %u, ok %u)\n",
+                  ok ? "OK" : "FAILED", imuTries, imuOks);
+  }
 
 #if FLOW_RAW_DEBUG
   static unsigned long dbgT=0, byteCount=0;
@@ -378,11 +454,19 @@ void loop(){
       }
     } else if(linkOk){
       bool landStick = (rx.throttle < LAND_STICK_THR);
+      // Throttle at the instant the land stick went down. LAND_FLOOR is only
+      // allowed to SLOW a descent - never to shove throttle back up. Alt hold
+      // can leave throttleHold below LAND_FLOOR, and the old unconditional
+      // assignment then made the drone climb on the landing command.
+      static bool  landPrev  = false;
+      static float landEntry = 0;
+      if(landStick && !landPrev) landEntry = throttleHold;
+      landPrev = landStick;
 
       if(landStick && throttleHold > MOTOR_IDLE){
         if(altOk){
           throttleHold -= LAND_BLEED*dt;
-          if(altM > LAND_TOUCH_ALT && throttleHold < LAND_FLOOR)
+          if(altM > LAND_TOUCH_ALT && throttleHold < LAND_FLOOR && landEntry > LAND_FLOOR)
             throttleHold = LAND_FLOOR;
           throttleHold = constrain(throttleHold, MOTOR_IDLE, THR_MAX);
 
@@ -413,8 +497,14 @@ void loop(){
 // ---- altitude hold ----
 #if ALT_ENABLE
   bool thrStick = (abs((int)rx.throttle - THR_CENTER) > THR_DEADBAND);
+  // hysteresis on the lower edge - without it, bobbing around the threshold
+  // re-captures altTarget/altBase and wipes altI on every crossing
+  static bool altWindow = false;
+  if(altM > ALT_MIN_ON)  altWindow = true;
+  if(altM < ALT_MIN_OFF) altWindow = false;
+
   bool altCanHold = armed && linkOk && !isSoftLanding && altOk
-                    && altM > ALT_MIN_HOLD && altM < ALT_MAX_HOLD
+                    && altWindow && altM < ALT_MAX_HOLD
                     && throttleHold > I_LIFT_THR;
 
   if(altCanHold && !thrStick){
@@ -428,13 +518,16 @@ void loop(){
     static float dAlt = 0;
     if(lastAltMs != lastAltCalc){
       float adt = (lastAltMs - lastAltCalc) / 1000.0f;
-      if(adt > 0.01f && adt < 0.5f) dAlt = (altM - altPrev) / adt;
+      if(adt > 0.01f && adt < 0.5f){
+        float dRaw = (altM - altPrev) / adt;
+        dAlt += ALT_D_LPF * (dRaw - dAlt);   // filtered, so KD can stay useful
+      }
       altPrev = altM;
       lastAltCalc = lastAltMs;
     }
     float err = altTarget - altM;
     altI += err * dt;
-    altI = constrain(altI, -1.5f, 1.5f);
+    altI = constrain(altI, -ALT_I_CLAMP, ALT_I_CLAMP);
     float corr = err*ALT_KP + altI*ALT_KI - dAlt*ALT_KD;
     corr = constrain(corr, -200.0f, 200.0f);
     throttleHold = constrain(altBase + corr, 0, THR_MAX);
@@ -480,7 +573,11 @@ void loop(){
   if(flowQ >= VEL_Q_ON) flowEngaged = true;
   if(flowQ <= VEL_Q_OFF) flowEngaged = false;
 
+#if FLOW_CAL
+  if(flowFresh && flowEngaged){
+#else
   if(flowFresh && flowEngaged && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
+#endif
     if(!posEngaged){ posEngaged = true; posHdg0 = headingRel; }
 
     // heading reference is captured on engage - posX/posY live in THAT frame,
