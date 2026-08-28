@@ -24,7 +24,7 @@ const float PITCH_OFFSET_FIXED =  1.8f;   // RE-VERIFY: BNO mount differs from M
 const float ROLL_OFFSET_FIXED  = 1.5f;   // RE-VERIFY
 float YAW_TRIM   = -2.0f;
 float PITCH_TRIM = 10.5f; //POSITIVE IS FORWARD
-float ROLL_TRIM  = -0.60f;    // MORE NEGATIVE EQUALS RIGHT
+float ROLL_TRIM  = -0.80f;    // MORE NEGATIVE EQUALS RIGHT
 
 
 struct __attribute__((packed)) Packet { uint16_t throttle,yaw,pitch,roll; uint8_t arm; };
@@ -71,7 +71,7 @@ unsigned long prevFlowMs = 0;
 #define VEL_D_MAX    2.0f
 #define VEL_Q_ON   20
 #define VEL_Q_OFF  12
-#define POS_GAIN     0.0f    // deg lean per metre of displacement
+#define POS_GAIN     0.9f    // deg lean per metre of displacement
 #define POS_MAX_ANG  4.0f    // clamp on the position term alone
 #define POS_LEAK     0.15f   // per-second decay - bleeds off accumulated error
 // angular size of one pixel = 2*tan(FOV/2)/W. 0.0036 = 60deg lens at 320px.
@@ -175,6 +175,11 @@ float Ki_roll=0.35f, Ki_pitch=0.35f, Ki_yaw=0.20f;
 float iRoll=0,iPitch=0,iYaw=0, ePrevRoll=0,ePrevPitch=0,ePrevYaw=0;
 
 #define I_LIFT_THR   550.0f
+// Throttle alone is a bad liftoff test - at thr 674 the drone was still at
+// 0.11m and the roll integrator had wound to 4.2 against the ground. Require
+// real altitude too. If the lidar is dead, fall back to throttle only.
+#define LIFT_ALT      0.09f   // integrator waits for this
+#define FLOW_MIN_ALT  0.25f   // flow is meaningless closer than this
 #define I_LAND_THR   350.0f
 #define I_LAND_MS    400
 bool iActive=false;
@@ -576,7 +581,8 @@ void loop(){
 #if FLOW_CAL
   if(flowFresh && flowEngaged){
 #else
-  if(flowFresh && flowEngaged && rR==0 && pR==0 && throttleHold > I_LIFT_THR){
+  if(flowFresh && flowEngaged && rR==0 && pR==0 && throttleHold > I_LIFT_THR
+     && altOk && altM > FLOW_MIN_ALT){
 #endif
     if(!posEngaged){ posEngaged = true; posHdg0 = headingRel; }
 
@@ -647,7 +653,8 @@ void loop(){
   float rollErr = rollSet - rollAngle;
   float pitchErr = pitchSet - pitchAngle;
 
-  if(!iActive && throttleHold > I_LIFT_THR) iActive = true;
+  bool airborne = throttleHold > I_LIFT_THR && (!altOk || altM > LIFT_ALT);
+  if(!iActive && airborne) iActive = true;
   if(iActive){
     if(throttleHold < I_LAND_THR){
       if(iBelowSince == 0) iBelowSince = millis();
